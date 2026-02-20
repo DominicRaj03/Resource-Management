@@ -25,62 +25,52 @@ def get_data(sheet_name):
 st.sidebar.title("Resource Management V9.2")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View", "Analytics Dashboard"])
 
-# --- SCREEN: MASTER LIST (V9.2 WITH RESOURCE TOGGLE) ---
+# Global Constants
+years = ["2025", "2026", "2027"]
+months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# --- SCREEN: MASTER LIST ---
 if page == "Master List":
     st.title("👤 Resource Master List")
     tab1, tab2 = st.tabs(["🆕 Register & Add Goals", "📋 Filtered List View"])
     
     master_df = get_data("Master_List")
-    years = ["2025", "2026", "2027"]
-    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    log_df = get_data("Performance_Log")
 
     with tab1:
         st.subheader("Assign Goals to Resource")
-        
-        # Resource Type Selection
+        # Resource Type Toggle
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
         
-        with st.form("new_goal_v9_2", clear_on_submit=True):
+        with st.form("new_goal_form", clear_on_submit=True):
             col_id1, col_id2 = st.columns(2)
             
             if res_type == "Existing Resource" and not master_df.empty:
-                # List all unique existing resources
                 existing_names = sorted(master_df["Resource Name"].unique().tolist())
                 res_name = col_id1.selectbox("Select Resource Name*", existing_names)
-                
-                # Auto-fill project based on selected resource
+                # Auto-fill project based on selection
                 current_proj = master_df[master_df["Resource Name"] == res_name]["Project"].iloc[0]
-                res_proj = col_id2.text_input("Project (Auto-filled)", value=current_proj, disabled=True)
+                res_proj = col_id2.text_input("Project", value=current_proj, disabled=True)
             else:
-                # Input for new resource
-                res_name = col_id1.text_input("New Resource Name*")
+                res_name = col_id1.text_input("Resource Name*")
                 res_proj = col_id2.text_input("Assign to Project*")
             
             col_dt1, col_dt2 = st.columns(2)
             sel_y = col_dt1.selectbox("Target Year", years)
             sel_m = col_dt2.selectbox("Target Month", months)
-            
             goal_text = st.text_area("Enter Goal Details*")
             
             if st.form_submit_button("🎯 Add Goal"):
                 if res_name and res_proj and goal_text:
-                    new_goal = pd.DataFrame([{
-                        "Resource Name": res_name, 
-                        "Project": res_proj, 
-                        "Goal": goal_text, 
-                        "Year": sel_y, 
-                        "Month": sel_m
-                    }])
+                    new_goal = pd.DataFrame([{"Resource Name": res_name, "Project": res_proj, "Goal": goal_text, "Year": sel_y, "Month": sel_m}])
                     conn.update(worksheet="Master_List", data=pd.concat([master_df, new_goal], ignore_index=True))
-                    st.success(f"Goal recorded for {res_name}")
+                    st.success(f"Goal added for {res_name}!")
                     st.rerun()
-                else:
-                    st.error("Missing mandatory fields.")
 
-    # TAB 2: LIST VIEW (PRESERVED WITH 4-TIER FILTER & STATUS BADGE)
     with tab2:
         if not master_df.empty:
             st.subheader("🔍 Goal Management")
+            # 4-Tier Filter
             f1, f2, f3, f4 = st.columns(4)
             fp = f1.selectbox("Filter Project", ["All"] + sorted(master_df["Project"].unique().tolist()))
             res_opts = master_df[master_df["Project"] == fp] if fp != "All" else master_df
@@ -94,30 +84,85 @@ if page == "Master List":
             if fy != "All": v_df = v_df[v_df["Year"] == fy]
             if fm != "All": v_df = v_df[v_df["Month"] == fm]
 
-            log_df = get_data("Performance_Log")
             for i, row in v_df.iterrows():
+                # Status Badge Logic
                 is_eval = not log_df[(log_df["Resource Name"] == row["Resource Name"]) & (log_df["Goal"] == row["Goal"])].empty if not log_df.empty else False
                 badge = "✅ Evaluated" if is_eval else "⏳ Pending"
                 
                 with st.expander(f"{badge} | {row['Resource Name']} - {row['Goal'][:40]}..."):
-                    with st.form(key=f"ed_v9_2_{i}"):
+                    with st.form(key=f"edit_{i}"):
                         un = st.text_input("Name", value=row['Resource Name'])
                         up = st.text_input("Project", value=row['Project'])
                         ug = st.text_area("Goal Details", value=row['Goal'])
-                        if st.form_submit_button("Update"):
-                            master_df.at[i, 'Resource Name'], master_df.at[i, 'Project'], master_df.at[i, 'Goal'] = un, up, ug
+                        uy = st.selectbox("Year", years, index=years.index(row['Year']) if row['Year'] in years else 0)
+                        um = st.selectbox("Month", months, index=months.index(row['Month']) if row['Month'] in months else 0)
+                        
+                        b1, b2 = st.columns([1, 4])
+                        if b1.form_submit_button("💾 Update"):
+                            master_df.at[i, 'Resource Name'], master_df.at[i, 'Project'] = un, up
+                            master_df.at[i, 'Goal'], master_df.at[i, 'Year'], master_df.at[i, 'Month'] = ug, uy, um
                             conn.update(worksheet="Master_List", data=master_df)
                             st.rerun()
+                        if b2.form_submit_button("🗑️ Delete"):
+                            conn.update(worksheet="Master_List", data=master_df.drop(i))
+                            st.rerun()
 
-# --- PRESERVED OTHER SCREENS (Capture, History, Analytics) ---
+# --- SCREEN: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
-    # ... logic for capturing performance for specific goals ...
-    st.info("Screen logic preserved from V9.1")
+    st.header("📈 Performance Capture")
+    master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
+    if not master_df.empty:
+        p_sel = st.sidebar.selectbox("Project", sorted(master_df["Project"].unique()))
+        r_sel = st.selectbox("Resource", sorted(master_df[master_df["Project"] == p_sel]["Resource Name"].unique()))
+        avail = master_df[(master_df["Resource Name"] == r_sel) & (master_df["Project"] == p_sel)]
+        
+        if not avail.empty:
+            g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
+            sel_g = st.selectbox("Select Goal to Evaluate", g_opts)
+            res_info = avail.iloc[g_opts.index(sel_g)]
+            
+            with st.form("capture_form"):
+                status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
+                comments = st.text_area("Justification / Comments*")
+                uploaded_file = st.file_uploader("Evidence Attachment", type=['pdf', 'png', 'jpg', 'docx'])
+                rating = st.feedback("stars")
+                
+                if st.form_submit_button("💾 Save Record"):
+                    new_e = pd.DataFrame([{
+                        "Project": p_sel, "Resource Name": r_sel, "MM/YYYY": f"{res_info['Month']}/{res_info['Year']}",
+                        "Goal": res_info['Goal'], "Status": status, "Rating": (rating+1 if rating else 0),
+                        "Comments": comments, "Evidence_Filename": (uploaded_file.name if uploaded_file else "No Attachment"),
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }])
+                    conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
+                    st.success("Evaluation Saved!")
 
+# --- SCREEN: HISTORICAL VIEW ---
 elif page == "Historical View":
-    # ... logic for filtering and exporting Excel ...
-    st.info("Screen logic preserved from V9.1")
+    st.title("📅 Historical Logs")
+    df = get_data("Performance_Log")
+    if not df.empty:
+        pf, mf = st.selectbox("Project", ["All"] + sorted(df["Project"].unique().tolist())), st.selectbox("Month", ["All"] + sorted(df["MM/YYYY"].unique().tolist()))
+        v_df = df.copy()
+        if pf != "All": v_df = v_df[v_df["Project"] == pf]
+        if mf != "All": v_df = v_df[v_df["MM/YYYY"] == mf]
+        
+        # Excel Export
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+            v_df.to_excel(writer, index=False)
+        st.download_button("📥 Export to Excel", data=buf.getvalue(), file_name="Performance_Log.xlsx")
+        st.dataframe(v_df, use_container_width=True)
 
+# --- SCREEN: ANALYTICS DASHBOARD ---
 else:
-    # ... logic for Top 3 Performers and Analytics ...
-    st.info("Screen logic preserved from V9.1")
+    st.title("📊 Performance Analytics")
+    df = get_data("Performance_Log")
+    if not df.empty:
+        # Top 3 spotlight
+        top_3 = df.groupby("Resource Name")["Rating"].mean().sort_values(ascending=False).head(3)
+        cols = st.columns(3)
+        for i, (name, rating) in enumerate(top_3.items()):
+            cols[i].metric(label=f"⭐ {name}", value=f"{rating:.2f}")
+        st.divider()
+        st.info("Additional project trends and charts can be added here.")
