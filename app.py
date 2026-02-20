@@ -13,7 +13,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 # --- Page Config ---
-st.set_page_config(page_title="Jarvis Performance V3.3", layout="wide")
+st.set_page_config(page_title="Jarvis Performance V3.7", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -22,7 +22,7 @@ def get_data(sheet_name):
     try:
         df = conn.read(worksheet=sheet_name, ttl=0)
         if not df.empty:
-            # FIX: Force Years/Months to clean strings to remove .0 decimal issue
+            # FIX: Clean strings to remove .0 decimal issues from Google Sheets
             for col in ["Year", "Month", "MM/YYYY"]:
                 if col in df.columns:
                     df[col] = df[col].astype(str).replace(r'\.0$', '', regex=True)
@@ -31,98 +31,99 @@ def get_data(sheet_name):
         return pd.DataFrame()
 
 # --- Navigation ---
-st.sidebar.title("Jarvis V3.3")
+st.sidebar.title("Jarvis V3.7")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View", "Analytics Dashboard"])
 
-# --- SCREEN 4: ANALYTICS DASHBOARD ---
-if page == "Analytics Dashboard":
-    st.header("📊 Advanced Performance Analytics")
-    df = get_data("Performance_Log")
-    
-    if not df.empty:
-        # 1. Project Summary & Team Stats
-        st.subheader("👥 Project Overview")
-        summary_df = df.groupby("Project")["Resource Name"].nunique().reset_index()
-        summary_df.columns = ["Project Name", "Headcount"]
-        st.table(summary_df)
-
-        st.divider()
-
-        # 2. Comparison Analytics
-        st.subheader("📈 Individual vs. Project Average")
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            sel_proj_comp = st.selectbox("Select Project", df["Project"].unique())
-        with col_f2:
-            res_options = df[df["Project"] == sel_proj_comp]["Resource Name"].unique()
-            sel_res_comp = st.selectbox("Select Resource to Compare", res_options)
-
-        if HAS_PLOTLY:
-            # Data Processing for Comparison
-            proj_data = df[df["Project"] == sel_proj_comp]
-            team_avg = proj_data.groupby("MM/YYYY")["Rating"].mean().reset_index()
-            team_avg.columns = ["MM/YYYY", "Team Average"]
-
-            indiv_data = proj_data[proj_data["Resource Name"] == sel_res_comp][["MM/YYYY", "Rating"]]
-            indiv_data.columns = ["MM/YYYY", f"{sel_res_comp}'s Rating"]
-
-            # Merge for Charting
-            comp_df = pd.merge(team_avg, indiv_data, on="MM/YYYY", how="left")
-            
-            fig_comp = px.line(comp_df, x="MM/YYYY", y=["Team Average", f"{sel_res_comp}'s Rating"],
-                              markers=True, title=f"Performance Benchmarking: {sel_res_comp} vs. {sel_proj_comp}")
-            st.plotly_chart(fig_comp, use_container_width=True)
-
-        st.divider()
-
-        # 3. Goal Distribution Stats
-        st.subheader("🎯 Goal Status Distribution")
-        proj_stats_df = df[df["Project"] == sel_proj_comp]
-        total_goals = len(proj_stats_df)
-        achieved = len(proj_stats_df[proj_stats_df["Status"] == "Achieved"])
-        
-        c1, c2, c3 = st.columns([1, 1, 2])
-        c1.metric("Total Goals", total_goals)
-        c2.metric("Achievement Rate", f"{int(achieved/total_goals*100)}%" if total_goals > 0 else "0%")
-        
-        if HAS_PLOTLY:
-            status_counts = proj_stats_df["Status"].value_counts().reset_index()
-            fig_pie = px.pie(status_counts, values='count', names='Status', hole=0.4,
-                            color_discrete_map={"Achieved": "green", "Partially Achieved": "orange", "Not Completed": "red"})
-            c3.plotly_chart(fig_pie, use_container_width=True)
-
-    else:
-        st.info("Log your first performance entry to unlock analytics.")
-
-# --- OTHER SCREENS (STABLE LOGIC) ---
-elif page == "Performance Capture":
+# --- SCREEN: PERFORMANCE CAPTURE (FIXED & RESTORED) ---
+if page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df = get_data("Master_List")
+    log_df = get_data("Performance_Log")
+    
     if not master_df.empty:
-        proj_filter = st.sidebar.selectbox("Project", master_df["Project"].unique())
-        res_list = master_df[master_df["Project"] == proj_filter]["Resource Name"].unique()
-        sel_res = st.selectbox("Resource", res_list)
+        proj_list = sorted(master_df["Project"].unique())
+        proj_filter = st.sidebar.selectbox("Filter Project", proj_list)
+        res_options = sorted(master_df[master_df["Project"] == proj_filter]["Resource Name"].unique())
+        sel_res = st.selectbox("Select Resource", res_options)
+        
         matched = master_df[(master_df["Resource Name"] == sel_res) & (master_df["Project"] == proj_filter)]
         
         if not matched.empty:
             res_info = matched.iloc[-1]
-            st.info(f"**Goal:** {res_info['Goal']} ({res_info['Month']} {res_info['Year']})")
-            with st.form("cap_form"):
+            st.info(f"**Current Goal:** {res_info['Goal']} ({res_info['Month']} {res_info['Year']})")
+            
+            # Goal History Context
+            if not log_df.empty:
+                history = log_df[log_df["Resource Name"] == sel_res].sort_values("Timestamp", ascending=False).head(3)
+                if not history.empty:
+                    with st.expander("🔍 View Goal History (Last 3 Months)"):
+                        st.table(history[["MM/YYYY", "Goal", "Status", "Rating"]])
+            
+            with st.form("capture_form"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 comments = st.text_area("Justification / Comments*")
+                feedback = st.text_area("Overall Feedback")
+                
+                # --- RESTORED EVIDENCE ATTACHMENT ---
+                uploaded_file = st.file_uploader("Evidence Attachment (Optional)", type=['pdf', 'png', 'jpg', 'docx'])
+                
                 rating = st.feedback("stars")
+                
                 if st.form_submit_button("💾 Save Record"):
-                    if status != "Achieved" and not comments.strip(): st.error("Comments mandatory!")
+                    if status != "Achieved" and not comments.strip():
+                        st.error("Justification is mandatory for non-achieved goals!")
                     else:
-                        log_df = get_data("Performance_Log")
                         period = f"{res_info['Month']}/{res_info['Year']}"
-                        if not log_df.empty: log_df = log_df[~((log_df["Resource Name"] == sel_res) & (log_df["MM/YYYY"] == period))]
-                        new_entry = pd.DataFrame([{"Project": proj_filter, "Resource Name": sel_res, "MM/YYYY": period, "Goal": res_info['Goal'], "Status": status, "Rating": (rating+1 if rating else 0), "Comments": comments, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])
-                        conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_entry], ignore_index=True))
-                        st.success("Saved!")
+                        
+                        # Prevent Duplicates
+                        save_df = log_df.copy()
+                        if not save_df.empty:
+                            save_df = save_df[~((save_df["Resource Name"] == sel_res) & (save_df["MM/YYYY"] == period))]
 
+                        # FIXED SyntaxError: Properly closed dictionary and list
+                        new_entry = pd.DataFrame([{
+                            "Project": proj_filter, 
+                            "Resource Name": sel_res, 
+                            "MM/YYYY": period,
+                            "Goal": res_info['Goal'], 
+                            "Status": status, 
+                            "Rating": (rating+1 if rating else 0),
+                            "Comments": comments, 
+                            "Feedback": feedback, 
+                            "Evidence_Filename": (uploaded_file.name if uploaded_file else "No Attachment"),
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }])
+                        conn.update(worksheet="Performance_Log", data=pd.concat([save_df, new_entry], ignore_index=True))
+                        st.success("Record Synced and Evidence Logged!")
+
+# --- SCREEN: ANALYTICS DASHBOARD ---
+elif page == "Analytics Dashboard":
+    st.header("📊 Performance Analytics")
+    df = get_data("Performance_Log")
+    st.caption(f"🔄 **System Last Synced:** {datetime.now().strftime('%H:%M:%S')}")
+    
+    if not df.empty and HAS_PLOTLY:
+        # Team Summary Table
+        st.subheader("👥 Project Headcount")
+        st.table(df.groupby("Project")["Resource Name"].nunique().reset_index().rename(columns={"Resource Name": "Headcount"}))
+        
+        # Individual Comparison Chart
+        st.divider()
+        sel_p = st.selectbox("Select Project", sorted(df["Project"].unique()))
+        p_df = df[df["Project"] == sel_p]
+        sel_user = st.selectbox("Resource Benchmarking", sorted(p_df["Resource Name"].unique()))
+        
+        team_avg = df[df["Project"] == sel_p].groupby("MM/YYYY")["Rating"].mean().reset_index()
+        user_trend = df[df["Resource Name"] == sel_user][["MM/YYYY", "Rating"]]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=team_avg["MM/YYYY"], y=team_avg["Rating"], name="Team Avg", line=dict(dash='dash', color='gray')))
+        fig.add_trace(go.Scatter(x=user_trend["MM/YYYY"], y=user_trend["Rating"], name=sel_user, mode='lines+markers'))
+        st.plotly_chart(fig, use_container_width=True)
+
+# --- OTHER SCREENS (MASTER & HISTORICAL) ---
 elif page == "Master List":
-    st.header("👤 Master List")
+    st.header("👤 Master List Registration")
     with st.form("m_form"):
         n, p = st.text_input("Name"), st.text_input("Project")
         g = st.text_area("Goal")
