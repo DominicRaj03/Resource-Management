@@ -5,16 +5,35 @@ from datetime import datetime
 import io
 
 # --- Page Config ---
-st.set_page_config(page_title="Jarvis Performance V1.4", layout="wide")
+st.set_page_config(page_title="Jarvis Performance V1.6", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(sheet_name):
-    return conn.read(worksheet=sheet_name, ttl=0)
+    try:
+        return conn.read(worksheet=sheet_name, ttl=0)
+    except Exception:
+        return pd.DataFrame()
 
-# --- Navigation ---
+# --- Admin: Database Repair Logic ---
+def repair_db():
+    master_df = pd.DataFrame(columns=["Resource Name", "Goal", "Month", "Year", "Project", "Experience", "Designation"])
+    log_df = pd.DataFrame(columns=["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating", "Comments", "Feedback"])
+    try:
+        conn.update(worksheet="Master_List", data=master_df)
+        conn.update(worksheet="Performance_Log", data=log_df)
+        st.sidebar.success("Database Repaired!")
+    except Exception as e:
+        st.sidebar.error(f"Repair Failed: Ensure Service Account is 'Editor'.")
+
+# --- Navigation & Admin Tools ---
+st.sidebar.title("Jarvis V1.6")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View"])
+
+st.sidebar.divider()
+if st.sidebar.button("🛠️ Repair/Initialize Database"):
+    repair_db()
 
 # --- SCREEN 1: MASTER LIST ---
 if page == "Master List":
@@ -32,14 +51,14 @@ if page == "Master List":
                 new_row = pd.DataFrame([{"Resource Name": name, "Goal": goal, "Month": month, "Year": year, "Project": proj}])
                 df = get_data("Master_List")
                 conn.update(worksheet="Master_List", data=pd.concat([df, new_row], ignore_index=True))
-                st.success(f"Saved {name} for {month} {year}!")
+                st.success(f"Saved {name}!")
 
 # --- SCREEN 2: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df = get_data("Master_List")
     
-    if not master_df.empty:
+    if not master_df.empty and "Resource Name" in master_df.columns:
         proj_filter = st.sidebar.selectbox("Filter Project", master_df["Project"].unique())
         res_options = master_df[master_df["Project"] == proj_filter]["Resource Name"].unique()
         sel_res = st.selectbox("Select Resource", res_options)
@@ -54,22 +73,19 @@ elif page == "Performance Capture":
             curr_period = f"{res_info['Month']}/{res_info['Year']}"
             log_df = get_data("Performance_Log")
             
-            duplicate_mask = (log_df["Resource Name"] == sel_res) & \
-                             (log_df["Project"] == proj_filter) & \
-                             (log_df["MM/YYYY"] == curr_period)
-            
-            if not log_df[duplicate_mask].empty:
-                st.warning("Previous entry found for this month. Overwriting...")
-                log_df = log_df[~duplicate_mask]
+            # --- DUPLICATE PREVENTION ---
+            if not log_df.empty and "Resource Name" in log_df.columns:
+                mask = (log_df["Resource Name"] == sel_res) & (log_df["Project"] == proj_filter) & (log_df["MM/YYYY"] == curr_period)
+                log_df = log_df[~mask]
 
             new_log = pd.DataFrame([{
-                "Project": proj_filter, "Resource Name": sel_res,
-                "MM/YYYY": curr_period, "Goal": res_info['Goal'],
-                "Status": status, "Rating": (rating + 1) if rating is not None else 0
+                "Project": proj_filter, "Resource Name": sel_res, "MM/YYYY": curr_period,
+                "Goal": res_info['Goal'], "Status": status, "Rating": (rating + 1) if rating is not None else 0
             }])
-            
             conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_log], ignore_index=True))
-            st.success("Record Saved Successfully!")
+            st.success("Record Saved!")
+    else:
+        st.warning("Master List is empty or corrupted. Use the Repair button in the sidebar.")
 
 # --- SCREEN 3: HISTORICAL VIEW ---
 else:
@@ -77,30 +93,16 @@ else:
     log_df = get_data("Performance_Log")
     
     if not log_df.empty:
-        # --- NEW: PROJECT METRICS ---
-        proj_list = log_df["Project"].unique()
-        sel_proj_stat = st.selectbox("Select Project for Summary", proj_list)
-        proj_subset = log_df[log_df["Project"] == sel_proj_stat]
+        # KPI Metrics
+        m1, m2 = st.columns(2)
+        m1.metric("Avg Rating", f"{log_df['Rating'].mean():.1f}")
+        m2.metric("Total Logs", len(log_df))
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Average Rating", f"{proj_subset['Rating'].mean():.1f} / 5")
-        m2.metric("Total Reviews", len(proj_subset))
-        m3.metric("Achievement Rate", f"{(len(proj_subset[proj_subset['Status'] == 'Achieved']) / len(proj_subset) * 100):.1f}%")
-        
-        st.divider()
-        
-        # Table View
-        cols = ["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating"]
-        st.dataframe(log_df[cols], use_container_width=True)
-        
-        # Trend Chart
-        st.subheader("📊 Performance Trends")
-        chart_res = st.selectbox("Select Resource to View Trend", log_df["Resource Name"].unique())
-        trend_data = log_df[log_df["Resource Name"] == chart_res].sort_values(by="MM/YYYY")
-        st.line_chart(data=trend_data, x="MM/YYYY", y="Rating")
+        # Table
+        st.dataframe(log_df[["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating"]], use_container_width=True)
         
         # Export
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             log_df.to_excel(writer, index=False, sheet_name='Performance')
-        st.download_button("📥 Download Excel", buffer.getvalue(), "Performance_Report.xlsx")
+        st.download_button("📥 Download Excel Report", buffer.getvalue(), "Performance_Report.xlsx")
