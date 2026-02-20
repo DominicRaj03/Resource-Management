@@ -12,7 +12,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V13.6", layout="wide")
+st.set_page_config(page_title="Resource Management V13.7", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -56,8 +56,8 @@ def auto_repair():
 
 auto_repair()
 
-# --- Navigation ---
-st.sidebar.title("Resource Management V13.6")
+# --- Navigation & Global Filters ---
+st.sidebar.title("Resource Management V13.7")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard"])
 
 years_list = ["2024", "2025", "2026", "2027"]
@@ -71,7 +71,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v13_6", clear_on_submit=True):
+        with st.form("goal_v13_7", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -126,7 +126,7 @@ elif page == "Performance Capture":
             g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
-            with st.form("cap_v13_6"):
+            with st.form("cap_v13_7"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 rating = st.feedback("stars")
                 if st.form_submit_button("💾 Save"):
@@ -142,34 +142,51 @@ else:
     st.title("📊 Performance Insights")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     if not master_df.empty:
+        # --- PROJECT FILTER FOR ANALYTICS ---
+        all_projects = sorted(master_df["Project"].unique().tolist())
+        selected_proj = st.selectbox("Filter Analytics by Project", ["All Projects"] + all_projects)
+
+        # Merge and Filter Data
         log_latest = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last') if not log_df.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status'])
         df = pd.merge(master_df, log_latest[['Resource Name', 'Goal', 'Status']], on=['Resource Name', 'Goal'], how='left')
         df['Status'] = df['Status'].fillna('Yet to Mark')
 
-        # --- 🏆 LEADERBOARD LOGIC ---
+        if selected_proj != "All Projects":
+            df = df[df['Project'] == selected_proj]
+
+        # Points for Leaderboard
         points_map = {'Achieved': 5, 'Partially Achieved': 3, 'Not Completed': 0, 'Yet to Mark': 0}
         df['Points'] = df['Status'].map(points_map)
         leaderboard = df.groupby('Resource Name')['Points'].sum().reset_index().sort_values('Points', ascending=False)
 
-        st.subheader("🏆 Resource Leaderboard")
-        if HAS_PLOTLY:
-            fig_lead = px.bar(leaderboard, x='Points', y='Resource Name', orientation='h', color='Points', color_continuous_scale='Greens', text_auto=True)
-            fig_lead.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig_lead, use_container_width=True)
-
-        st.divider()
-        # Summary & Heatmap
+        # Metrics
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Goals", len(df))
-        m2.metric("Achievement Rate", f"{(len(df[df['Status']=='Achieved'])/len(df)*100):.1f}%")
-        m3.metric("Top Scorer", leaderboard.iloc[0]['Resource Name'] if not leaderboard.empty else "N/A")
+        m2.metric("Achievement Rate", f"{(len(df[df['Status']=='Achieved'])/len(df)*100):.1f}%" if len(df) > 0 else "0%")
+        m3.metric("Project Rank #1", leaderboard.iloc[0]['Resource Name'] if not leaderboard.empty else "N/A")
 
-        if HAS_PLOTLY:
-            st.subheader("🔥 Goal Distribution Heatmap")
-            heat_data = df.groupby(['Month', 'Status']).size().unstack(fill_value=0)
-            for s in ['Achieved', 'Partially Achieved', 'Not Completed', 'Yet to Mark']:
-                if s not in heat_data.columns: heat_data[s] = 0
-            fig_heat = px.imshow(heat_data.T, labels=dict(x="Month", y="Status", color="Count"), color_continuous_scale='RdYlGn', text_auto=True)
-            st.plotly_chart(fig_heat, use_container_width=True)
+        if HAS_PLOTLY and not df.empty:
+            st.divider()
+            col_l, col_r = st.columns(2)
+
+            with col_l:
+                st.subheader(f"🏆 Leaderboard: {selected_proj}")
+                fig_lead = px.bar(leaderboard.head(10), x='Points', y='Resource Name', orientation='h', color='Points', color_continuous_scale='Greens', text_auto=True)
+                fig_lead.update_layout(yaxis={'categoryorder':'total ascending'})
+                st.plotly_chart(fig_lead, use_container_width=True)
+
+            with col_r:
+                st.subheader("🔥 Goal Status Breakdown")
+                status_counts = df['Status'].value_counts().reset_index()
+                status_counts.columns = ['Status', 'Count']
+                fig_pie = px.pie(status_counts, values='Count', names='Status', 
+                                 color='Status', color_discrete_map={'Achieved':'#2E7D32', 'Partially Achieved':'#F9A825', 'Not Completed':'#C62828', 'Yet to Mark':'#757575'})
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            st.divider()
+            st.subheader("📈 Monthly Planning Velocity")
+            trend_data = df.groupby(['Year', 'Month']).size().reset_index(name='Count')
+            fig_trend = px.line(trend_data, x='Month', y='Count', color='Year', markers=True, category_orders={"Month": months_list})
+            st.plotly_chart(fig_trend, use_container_width=True)
     else:
         st.warning("No data found for analytics.")
