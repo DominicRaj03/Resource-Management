@@ -2,7 +2,6 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
-import io
 
 # --- Plotly Integration ---
 try:
@@ -13,7 +12,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V13.0", layout="wide")
+st.set_page_config(page_title="Resource Management V13.1", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -46,12 +45,11 @@ def run_system_repair():
             conn.update(worksheet="Master_List", data=m_df)
             
             p_df = get_data("Performance_Log")
-            # Added Recognition fields to required list
             p_required = ["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating", "Comments", "Recommended for Recognition", "Recognition Comments", "Timestamp"]
             for col in p_required:
                 if col not in p_df.columns: p_df[col] = ""
             conn.update(worksheet="Performance_Log", data=p_df)
-            st.sidebar.success("Database Repaired! Columns synced.")
+            st.sidebar.success("Database Repaired!")
             st.rerun()
         except Exception as e:
             st.sidebar.error(f"Repair failed: {e}")
@@ -73,7 +71,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v13_0", clear_on_submit=True):
+        with st.form("goal_v13_1", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -94,7 +92,6 @@ if page == "Master List":
             master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
             
             if not log_df.empty:
-                # Included recognition columns in the merge
                 target_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Recommended for Recognition', 'Timestamp']
                 avail_log_cols = [c for c in target_cols if c in log_df.columns]
                 log_subset = log_df[avail_log_cols].copy().drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
@@ -102,7 +99,8 @@ if page == "Master List":
             else:
                 unified_df = master_prep.copy()
 
-            unified_df['Status'] = unified_df['Status'].fillna('⏳ Pending Evaluation')
+            # --- UPDATED: "Yet to Mark" logic ---
+            unified_df['Status'] = unified_df['Status'].fillna('Yet to Mark')
             if 'Recommended for Recognition' in unified_df.columns:
                 unified_df['Recommended for Recognition'] = unified_df['Recommended for Recognition'].fillna("No")
 
@@ -119,8 +117,11 @@ if page == "Master List":
             if f_m != "All": final_df = final_df[final_df["Month"] == f_m]
 
             def color_status(val):
-                color = '#2E7D32' if val == 'Achieved' else '#C62828' if val == 'Not Completed' else '#F9A825' if val == 'Partially Achieved' else 'none'
-                return f'background-color: {color}; color: white'
+                if val == 'Achieved': return 'background-color: #2E7D32; color: white'
+                if val == 'Not Completed': return 'background-color: #C62828; color: white'
+                if val == 'Partially Achieved': return 'background-color: #F9A825; color: black'
+                if val == 'Yet to Mark': return 'background-color: #757575; color: white'
+                return ''
 
             st.dataframe(final_df.style.applymap(color_status, subset=['Status']), use_container_width=True)
 
@@ -138,25 +139,22 @@ elif page == "Performance Capture":
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
             
-            with st.form("cap_v13_0", clear_on_submit=True):
+            with st.form("cap_v13_1", clear_on_submit=True):
                 col_a, col_b = st.columns(2)
                 status = col_a.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 rating = col_b.feedback("stars")
-                
                 comments = st.text_area("Evaluation Comments*")
                 
                 st.divider()
                 st.subheader("🌟 Recognition & Rewards")
                 is_rec = st.checkbox("Recommend for Recognition?")
-                rec_comments = st.text_area("Why does this resource deserve recognition?", help="Mention specific achievements or impact.")
+                rec_comments = st.text_area("Why does this resource deserve recognition?")
                 
                 if st.form_submit_button("💾 Save Performance Entry"):
                     new_entry = pd.DataFrame([{
-                        "Project": p_sel, 
-                        "Resource Name": r_sel, 
+                        "Project": p_sel, "Resource Name": r_sel, 
                         "MM/YYYY": f"{res_info['Month']}/{res_info['Year']}", 
-                        "Goal": res_info['Goal'], 
-                        "Status": status, 
+                        "Goal": res_info['Goal'], "Status": status, 
                         "Rating": (rating+1 if rating is not None else 0), 
                         "Comments": comments,
                         "Recommended for Recognition": "Yes" if is_rec else "No",
@@ -164,8 +162,7 @@ elif page == "Performance Capture":
                         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }])
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_entry], ignore_index=True))
-                    st.success(f"Performance for {r_sel} saved successfully!")
-                    st.rerun()
+                    st.success("Entry Saved!"); st.rerun()
 
 # --- SCREEN: ANALYTICS DASHBOARD ---
 else:
@@ -173,30 +170,13 @@ else:
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     
     if not master_df.empty:
-        # High level summary
-        audit_full = pd.merge(master_df, log_df[['Resource Name', 'Goal', 'Status', 'Recommended for Recognition']] if not log_df.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status', 'Recommended for Recognition']), on=['Resource Name', 'Goal'], how='left')
+        audit_full = pd.merge(master_df, log_df[['Resource Name', 'Goal', 'Status']] if not log_df.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status']), on=['Resource Name', 'Goal'], how='left')
+        audit_full['Status'] = audit_full['Status'].fillna('Yet to Mark')
         
         k1, k2, k3 = st.columns(3)
         k1.metric("Total Goals", len(audit_full))
-        
-        # Count Recognitions
-        rec_count = 0
-        if 'Recommended for Recognition' in audit_full.columns:
-            rec_count = len(audit_full[audit_full['Recommended for Recognition'] == 'Yes'])
-        k2.metric("Recognition Recommendations", rec_count)
-        
+        k2.metric("Pending (Yet to Mark)", len(audit_full[audit_full['Status'] == 'Yet to Mark']))
         achieved = len(audit_full[audit_full['Status'] == 'Achieved'])
         k3.metric("Achievement Rate", f"{(achieved/len(audit_full)*100):.1f}%" if len(audit_full)>0 else "0%")
-
-        if HAS_PLOTLY and not log_df.empty:
-            st.divider()
-            st.subheader("🏆 Recognition Leaderboard")
-            if 'Recommended for Recognition' in log_df.columns:
-                rec_df = log_df[log_df['Recommended for Recognition'] == 'Yes'].groupby('Resource Name').size().reset_index(name='Recognition Count')
-                if not rec_df.empty:
-                    fig_rec = px.bar(rec_df.sort_values('Recognition Count', ascending=False), x='Resource Name', y='Recognition Count', color='Recognition Count', color_continuous_scale='Viridis')
-                    st.plotly_chart(fig_rec, use_container_width=True)
-                else:
-                    st.info("No recognitions recorded yet.")
     else:
-        st.warning("No data found to analyze.")
+        st.warning("No data found.")
