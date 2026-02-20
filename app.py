@@ -11,7 +11,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-st.set_page_config(page_title="Resource Management V19.0", layout="wide")
+st.set_page_config(page_title="Resource Management V19.1", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 CURRENT_YEAR = str(datetime.now().year)
@@ -35,7 +35,7 @@ def ensure_columns(df, required_cols):
     return df
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V19.0")
+st.sidebar.title("Resource Management V19.1")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard", "Audit Section"])
 
 years_list = ["2024", "2025", "2026", "2027", "2028"]
@@ -49,7 +49,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v19", clear_on_submit=True):
+        with st.form("goal_v19_1", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 r_names = sorted(master_df["Resource Name"].unique().tolist())
@@ -72,36 +72,26 @@ if page == "Master List":
 
     with tab2:
         st.subheader("📤 Bulk Goal Upload")
-        
-        # 1. Provide Template
         template_df = pd.DataFrame(columns=["Resource Name", "Project", "Goal", "Year", "Month"])
         template_csv = template_df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download Excel Template", data=template_csv, file_name="goal_template.csv", mime="text/csv")
         
         st.divider()
-        
-        # 2. Upload and Validate
         uploaded_file = st.file_uploader("Choose CSV/Excel File", type=['csv', 'xlsx'])
         if uploaded_file:
             try:
-                if uploaded_file.name.endswith('.csv'):
-                    import_df = pd.read_csv(uploaded_file)
-                else:
-                    import_df = pd.read_excel(uploaded_file)
-                
-                # Validation Logic
+                import_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
                 required_fields = ["Resource Name", "Project", "Goal", "Year", "Month"]
                 missing_cols = [col for col in required_fields if col not in import_df.columns]
                 
                 if missing_cols:
                     st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
                 elif import_df[required_fields].isnull().values.any():
-                    st.error("❌ Validation Error: Some required cells are empty. Please check your file.")
+                    st.error("❌ Validation Error: Required cells are empty.")
                 else:
                     st.success(f"✅ Validated {len(import_df)} rows.")
                     if st.button("🚀 Confirm & Insert All"):
-                        final_df = pd.concat([master_df, import_df], ignore_index=True)
-                        conn.update(worksheet="Master_List", data=final_df)
+                        conn.update(worksheet="Master_List", data=pd.concat([master_df, import_df], ignore_index=True))
                         st.success("Bulk Upload Completed!"); st.rerun()
             except Exception as e:
                 st.error(f"Error reading file: {e}")
@@ -110,7 +100,7 @@ if page == "Master List":
         if not master_df.empty:
             st.data_editor(master_df, use_container_width=True, hide_index=True)
 
-# --- PERFORMANCE CAPTURE ---
+# --- SCREEN: PERFORMANCE CAPTURE (Recognition Restored) ---
 elif page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df = get_data("Master_List")
@@ -129,24 +119,40 @@ elif page == "Performance Capture":
         if not log_df.empty:
             record_exists = not log_df[(log_df["Resource Name"] == sel_r) & (log_df["Goal"] == sel_g)].empty
 
-        can_edit = not record_exists
+        can_edit = True
         if record_exists:
             st.warning("⚠️ Goal already captured.")
-            if st.checkbox("Override previous entry?"):
-                can_edit = True
+            override = st.checkbox("Would you like to override previous entry?")
+            can_edit = override
 
         if can_edit:
-            with st.form("cap_v19", clear_on_submit=True):
+            with st.form("cap_v19_1", clear_on_submit=True):
                 status = st.selectbox("Status", ["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"])
                 rating = st.feedback("stars") 
                 comments = st.text_area("Comments*")
+                
+                # --- RESTORED FIELDS ---
+                st.divider()
+                is_rec = st.checkbox("Recommend for Recognition?")
+                just = st.text_area("Justification (Required if recommended)")
+                
                 if st.form_submit_button("💾 Save Entry"):
-                    if comments:
-                        new_e = pd.DataFrame([{"Resource Name": sel_r, "Goal": sel_g, "Status": status, "Rating": (rating+1 if rating is not None else 0), "Comments": comments, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])
-                        conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
-                        st.success("Saved!"); st.rerun()
+                    if not comments:
+                        st.error("Comments are required.")
+                    elif is_rec and not just:
+                        st.error("Justification is required for recognition.")
                     else:
-                        st.error("Comments required.")
+                        new_e = pd.DataFrame([{
+                            "Resource Name": sel_r, "Goal": sel_g, "Status": status,
+                            "Rating": (rating+1 if rating is not None else 0), "Comments": comments,
+                            "Recommended": "Yes" if is_rec else "No", "Justification": just,
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }])
+                        log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Recommended', 'Justification', 'Timestamp'])
+                        conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
+                        st.success("Entry Saved Successfully!"); st.rerun()
+        else:
+            st.info("Check override box above to edit.")
 
 # --- ANALYTICS DASHBOARD ---
 elif page == "Analytics Dashboard":
@@ -172,9 +178,6 @@ else:
     st.title("🛡️ Performance Audit Section")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     if not log_df.empty:
+        log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Recommended', 'Justification', 'Timestamp'])
         audit_df = pd.merge(log_df.sort_values('Timestamp', ascending=False), master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
         st.dataframe(audit_df, use_container_width=True, hide_index=True)
-        towrap = io.BytesIO()
-        with pd.ExcelWriter(towrap, engine='xlsxwriter') as writer:
-            audit_df.to_excel(writer, index=False)
-        st.download_button("📥 Download Audit Excel", data=towrap.getvalue(), file_name="Audit_Report.xlsx")
