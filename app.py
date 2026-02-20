@@ -11,7 +11,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-st.set_page_config(page_title="Resource Management V17.1", layout="wide")
+st.set_page_config(page_title="Resource Management V17.2", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(sheet_name):
@@ -33,7 +33,7 @@ def ensure_columns(df, required_cols):
     return df
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V17.1")
+st.sidebar.title("Resource Management V17.2")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard", "Audit Section"])
 
 years_list = ["2024", "2025", "2026", "2027"]
@@ -48,7 +48,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v17_1", clear_on_submit=True):
+        with st.form("goal_v17_2", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 r_names = sorted(master_df["Resource Name"].unique().tolist())
@@ -94,7 +94,7 @@ if page == "Master List":
                     "Resource Name": st.column_config.TextColumn(disabled=True),
                     "Project": st.column_config.TextColumn(disabled=True),
                 },
-                use_container_width=True, hide_index=True, key="goal_editor_v17_1"
+                use_container_width=True, hide_index=True, key="goal_editor_v17_2"
             )
 
             if st.button("💾 Save Changes"):
@@ -105,7 +105,7 @@ if page == "Master List":
                 conn.update(worksheet="Performance_Log", data=pd.concat([log_df, pd.DataFrame(new_entries)], ignore_index=True))
                 st.success("Changes Saved!"); st.rerun()
 
-# --- SCREEN: PERFORMANCE CAPTURE (With Conditional Visibility) ---
+# --- SCREEN: PERFORMANCE CAPTURE (Fixed Visibility Logic) ---
 elif page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df = get_data("Master_List")
@@ -120,19 +120,20 @@ elif page == "Performance Capture":
         g_list = master_df[(master_df["Project"] == sel_p) & (master_df["Resource Name"] == sel_r)]["Goal"].tolist()
         sel_g = st.selectbox("3. Select Goal", g_list, key="cap_g")
         
-        # Check if entry already exists
-        exists = False
+        # Determine if record exists
+        record_exists = False
         if not log_df.empty:
-            exists = not log_df[(log_df["Resource Name"] == sel_r) & (log_df["Goal"] == sel_g)].empty
+            record_exists = not log_df[(log_df["Resource Name"] == sel_r) & (log_df["Goal"] == sel_g)].empty
 
-        with st.form("cap_v17_1", clear_on_submit=True):
-            override = False
-            if exists:
-                st.warning("⚠️ Goal already captured for this resource.")
-                override = st.checkbox("Would you like to override previous entry?")
-            
-            # Conditionally show capture fields
-            if not exists or override:
+        # Logic: If exists, require override checkbox to see fields
+        can_edit = True
+        if record_exists:
+            st.warning("⚠️ Goal already captured for this resource.")
+            override = st.checkbox("Would you like to override previous entry?")
+            can_edit = override
+
+        if can_edit:
+            with st.form("cap_v17_2", clear_on_submit=True):
                 status = st.selectbox("Status", ["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"])
                 rating = st.feedback("stars") 
                 comments = st.text_area("Comments*")
@@ -152,10 +153,9 @@ elif page == "Performance Capture":
                         }])
                         log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Recommended', 'Justification', 'Timestamp'])
                         conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
-                        st.success("Performance Captured successfully!"); st.rerun()
-            else:
-                st.info("Check the override box above to edit/delete the previous entry's data.")
-                st.form_submit_button("Save Entry", disabled=True)
+                        st.success("Entry Updated Successfully!"); st.rerun()
+        else:
+            st.info("Check the override box above to allow editing for this goal.")
     else:
         st.warning("Please add goals in the Master List first.")
 
@@ -168,7 +168,7 @@ elif page == "Analytics Dashboard":
         df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("Evaluations", len(df))
+        c1.metric("Unique Evaluations", len(df))
         c2.metric("Achievement Rate", f"{(len(df[df['Status']=='Achieved'])/len(df)*100):.1f}%" if len(df)>0 else "0%")
         c3.metric("Avg Stars", f"{df['Rating'].mean():.1f} ⭐")
 
