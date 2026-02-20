@@ -11,7 +11,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-st.set_page_config(page_title="Resource Management V17.2", layout="wide")
+st.set_page_config(page_title="Resource Management V18.0", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(sheet_name):
@@ -33,7 +33,7 @@ def ensure_columns(df, required_cols):
     return df
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V17.2")
+st.sidebar.title("Resource Management V18.0")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard", "Audit Section"])
 
 years_list = ["2024", "2025", "2026", "2027"]
@@ -48,7 +48,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v17_2", clear_on_submit=True):
+        with st.form("goal_v18", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 r_names = sorted(master_df["Resource Name"].unique().tolist())
@@ -87,25 +87,9 @@ if page == "Master List":
             if sel_year != "All": filtered_df = filtered_df[filtered_df["Year"].astype(str) == sel_year]
             if sel_month != "All": filtered_df = filtered_df[filtered_df["Month"] == sel_month]
 
-            edited_df = st.data_editor(
-                filtered_df,
-                column_config={
-                    "Status": st.column_config.SelectboxColumn("Status", options=["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"], required=True),
-                    "Resource Name": st.column_config.TextColumn(disabled=True),
-                    "Project": st.column_config.TextColumn(disabled=True),
-                },
-                use_container_width=True, hide_index=True, key="goal_editor_v17_2"
-            )
+            st.data_editor(filtered_df, use_container_width=True, hide_index=True)
 
-            if st.button("💾 Save Changes"):
-                conn.update(worksheet="Master_List", data=edited_df.drop(columns=['Status'], errors='ignore'))
-                new_entries = []
-                for _, row in edited_df.iterrows():
-                    new_entries.append({"Resource Name": row["Resource Name"], "Goal": row["Goal"], "Status": row["Status"], "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                conn.update(worksheet="Performance_Log", data=pd.concat([log_df, pd.DataFrame(new_entries)], ignore_index=True))
-                st.success("Changes Saved!"); st.rerun()
-
-# --- SCREEN: PERFORMANCE CAPTURE (Fixed Visibility Logic) ---
+# --- SCREEN: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df = get_data("Master_List")
@@ -120,12 +104,10 @@ elif page == "Performance Capture":
         g_list = master_df[(master_df["Project"] == sel_p) & (master_df["Resource Name"] == sel_r)]["Goal"].tolist()
         sel_g = st.selectbox("3. Select Goal", g_list, key="cap_g")
         
-        # Determine if record exists
         record_exists = False
         if not log_df.empty:
             record_exists = not log_df[(log_df["Resource Name"] == sel_r) & (log_df["Goal"] == sel_g)].empty
 
-        # Logic: If exists, require override checkbox to see fields
         can_edit = True
         if record_exists:
             st.warning("⚠️ Goal already captured for this resource.")
@@ -133,7 +115,7 @@ elif page == "Performance Capture":
             can_edit = override
 
         if can_edit:
-            with st.form("cap_v17_2", clear_on_submit=True):
+            with st.form("cap_v18", clear_on_submit=True):
                 status = st.selectbox("Status", ["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"])
                 rating = st.feedback("stars") 
                 comments = st.text_area("Comments*")
@@ -151,35 +133,66 @@ elif page == "Performance Capture":
                             "Recommended": "Yes" if is_rec else "No", "Justification": just,
                             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }])
-                        log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Recommended', 'Justification', 'Timestamp'])
                         conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
                         st.success("Entry Updated Successfully!"); st.rerun()
         else:
-            st.info("Check the override box above to allow editing for this goal.")
-    else:
-        st.warning("Please add goals in the Master List first.")
+            st.info("Check override box above to edit.")
 
-# --- SCREEN: ANALYTICS & AUDIT ---
+# --- SCREEN: ANALYTICS DASHBOARD (Dynamic Trend Graphs) ---
 elif page == "Analytics Dashboard":
     st.title("📊 Performance Insights")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
+    
     if not log_df.empty and not master_df.empty:
-        log_df = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
-        df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
+        # Merge for full context
+        log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Timestamp'])
+        full_df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project', 'Year', 'Month']], on=['Resource Name', 'Goal'], how='left')
         
+        # --- Filters ---
         c1, c2, c3 = st.columns(3)
-        c1.metric("Unique Evaluations", len(df))
-        c2.metric("Achievement Rate", f"{(len(df[df['Status']=='Achieved'])/len(df)*100):.1f}%" if len(df)>0 else "0%")
-        c3.metric("Avg Stars", f"{df['Rating'].mean():.1f} ⭐")
+        f_proj = c1.selectbox("Filter Project", ["All"] + sorted(master_df["Project"].unique().tolist()))
+        f_year = c2.selectbox("Filter Year", ["All"] + sorted(master_df["Year"].unique().astype(str).tolist()))
+        f_month = c3.selectbox("Filter Month", ["All"] + months_list)
+
+        filtered_df = full_df.copy()
+        if f_proj != "All": filtered_df = filtered_df[filtered_df["Project"] == f_proj]
+        if f_year != "All": filtered_df = filtered_df[filtered_df["Year"].astype(str) == f_year]
+        if f_month != "All": filtered_df = filtered_df[filtered_df["Month"] == f_month]
+
+        # Latest choice override for KPIs
+        kpi_df = filtered_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Unique Evaluations", len(kpi_df))
+        m2.metric("Achievement Rate", f"{(len(kpi_df[kpi_df['Status']=='Achieved'])/len(kpi_df)*100):.1f}%" if len(kpi_df)>0 else "0%")
+        m3.metric("Avg Rating", f"{kpi_df['Rating'].mean():.1f} ⭐")
 
         if HAS_PLOTLY:
+            st.divider()
+            
+            # 1. Performance Trend (Shown when "All" months or many months exist)
+            if f_month == "All":
+                st.subheader("📈 Performance Trend (Monthly Rating Average)")
+                # Map months to numbers for sorting
+                m_map = {m: i+1 for i, m in enumerate(months_list)}
+                trend_df = filtered_df.copy()
+                trend_df['MonthNum'] = trend_df['Month'].map(m_map)
+                trend_data = trend_df.groupby(['Year', 'MonthNum', 'Month'])['Rating'].mean().reset_index().sort_values(['Year', 'MonthNum'])
+                
+                fig_trend = px.line(trend_data, x='Month', y='Rating', color='Year', markers=True, 
+                                   title="Average Star Rating over Time", labels={'Rating': 'Avg Stars'})
+                st.plotly_chart(fig_trend, use_container_width=True)
+
             col1, col2 = st.columns(2)
             with col1:
-                lb = df.groupby("Resource Name")["Rating"].sum().reset_index().sort_values("Rating", ascending=False)
-                st.plotly_chart(px.bar(lb.head(10), x="Rating", y="Resource Name", orientation='h', title="Top Performers"), use_container_width=True)
+                st.subheader("🏆 Top Performers")
+                lb = kpi_df.groupby("Resource Name")["Rating"].mean().reset_index().sort_values("Rating", ascending=False)
+                st.plotly_chart(px.bar(lb.head(10), x="Rating", y="Resource Name", orientation='h', color="Rating"), use_container_width=True)
             with col2:
-                st.plotly_chart(px.pie(df, names="Status", title="Goal Status Distribution"), use_container_width=True)
+                st.subheader("🎯 Goal Status Distribution")
+                st.plotly_chart(px.pie(kpi_df, names="Status"), use_container_width=True)
 
+# --- SCREEN: AUDIT SECTION ---
 else:
     st.title("🛡️ Performance Audit Section")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
@@ -187,10 +200,4 @@ else:
         log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Recommended', 'Justification', 'Timestamp'])
         clean_log = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
         audit_df = pd.merge(clean_log, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
-        
         st.dataframe(audit_df.sort_values("Timestamp", ascending=False), use_container_width=True, hide_index=True)
-        
-        towrap = io.BytesIO()
-        with pd.ExcelWriter(towrap, engine='xlsxwriter') as writer:
-            audit_df.to_excel(writer, index=False, sheet_name='Audit_Report')
-        st.download_button("📥 Download Excel", data=towrap.getvalue(), file_name=f"Audit_Report.xlsx")
