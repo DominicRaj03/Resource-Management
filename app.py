@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
+import io
 
 # --- Plotly Integration ---
 try:
@@ -10,7 +11,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-st.set_page_config(page_title="Resource Management V16.0", layout="wide")
+st.set_page_config(page_title="Resource Management V16.2", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(sheet_name):
@@ -32,7 +33,7 @@ def ensure_columns(df, required_cols):
     return df
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V16.0")
+st.sidebar.title("Resource Management V16.2")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard", "Audit Section"])
 
 years_list = ["2024", "2025", "2026", "2027"]
@@ -47,7 +48,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v16_0", clear_on_submit=True):
+        with st.form("goal_v16_2", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 r_names = sorted(master_df["Resource Name"].unique().tolist())
@@ -75,7 +76,9 @@ if page == "Master List":
             sel_month = f4.selectbox("Month", ["All"] + months_list)
 
             log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Timestamp'])
+            # Logic to keep ONLY the latest entry for Master List view
             log_latest = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last') if not log_df.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status'])
+            
             display_df = pd.merge(master_df, log_latest[['Resource Name', 'Goal', 'Status']], on=['Resource Name', 'Goal'], how='left')
             display_df['Status'] = display_df['Status'].fillna('Assigned')
 
@@ -92,18 +95,16 @@ if page == "Master List":
                     "Resource Name": st.column_config.TextColumn(disabled=True),
                     "Project": st.column_config.TextColumn(disabled=True),
                 },
-                use_container_width=True, hide_index=True, key="goal_editor_v16_0"
+                use_container_width=True, hide_index=True, key="goal_editor_v16_2"
             )
 
-            a1, a2 = st.columns([1, 2])
-            if a1.button("💾 Save Changes"):
+            if st.button("💾 Save Changes"):
                 conn.update(worksheet="Master_List", data=edited_df.drop(columns=['Status'], errors='ignore'))
                 new_entries = []
                 for _, row in edited_df.iterrows():
                     new_entries.append({"Resource Name": row["Resource Name"], "Goal": row["Goal"], "Status": row["Status"], "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 conn.update(worksheet="Performance_Log", data=pd.concat([log_df, pd.DataFrame(new_entries)], ignore_index=True))
-                st.success("Saved!"); st.rerun()
-            a2.download_button("📥 Export CSV", data=edited_df.to_csv(index=False).encode('utf-8'), file_name='goals.csv', mime='text/csv')
+                st.success("Changes Saved!"); st.rerun()
 
 # --- SCREEN: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
@@ -120,7 +121,7 @@ elif page == "Performance Capture":
         g_list = master_df[(master_df["Project"] == sel_p) & (master_df["Resource Name"] == sel_r)]["Goal"].tolist()
         sel_g = st.selectbox("3. Select Goal", g_list, key="cap_g")
         
-        with st.form("cap_v16_0", clear_on_submit=True):
+        with st.form("cap_v16_2", clear_on_submit=True):
             status = st.selectbox("Status", ["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"])
             rating = st.feedback("stars") 
             comments = st.text_area("Comments*")
@@ -150,14 +151,15 @@ elif page == "Analytics Dashboard":
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     
     if not log_df.empty and not master_df.empty:
-        log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating'])
-        df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
+        # Override duplicate entries by keeping only the latest timestamp per Goal
+        log_df = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
         
+        df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
         p_filter = st.selectbox("Project Filter", ["All"] + sorted(master_df["Project"].unique().tolist()))
         if p_filter != "All": df = df[df["Project"] == p_filter]
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("Evaluations", len(df))
+        c1.metric("Unique Evaluations", len(df))
         c2.metric("Achievement Rate", f"{(len(df[df['Status']=='Achieved'])/len(df)*100):.1f}%" if len(df)>0 else "0%")
         c3.metric("Avg Stars", f"{df['Rating'].mean():.1f} ⭐")
 
@@ -165,24 +167,25 @@ elif page == "Analytics Dashboard":
             st.divider()
             col1, col2 = st.columns(2)
             with col1:
-                st.subheader("🏆 Leaderboard")
+                st.subheader("🏆 Leaderboard (Latest Ratings)")
                 lb = df.groupby("Resource Name")["Rating"].sum().reset_index().sort_values("Rating", ascending=False)
                 st.plotly_chart(px.bar(lb.head(10), x="Rating", y="Resource Name", orientation='h', color="Rating", color_continuous_scale='Greens'), use_container_width=True)
             with col2:
-                st.subheader("🎯 Goal Status")
+                st.subheader("🎯 Current Status Distribution")
                 st.plotly_chart(px.pie(df, names="Status", color="Status"), use_container_width=True)
 
-# --- SCREEN: AUDIT SECTION (New Page) ---
+# --- SCREEN: AUDIT SECTION (Latest Choice Only) ---
 else:
     st.title("🛡️ Performance Audit Section")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     
     if not log_df.empty:
         log_df = ensure_columns(log_df, ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Recommended', 'Justification', 'Timestamp'])
-        # Merge with master to get Project info
-        audit_df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
         
-        # Reorder columns for better audit view
+        # KEY FIX: Override duplicate entries to show only latest choice
+        clean_log = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
+        
+        audit_df = pd.merge(clean_log, master_df[['Resource Name', 'Goal', 'Project']], on=['Resource Name', 'Goal'], how='left')
         audit_df = audit_df[['Timestamp', 'Resource Name', 'Project', 'Goal', 'Status', 'Rating', 'Recommended', 'Justification', 'Comments']]
         
         f1, f2 = st.columns(2)
@@ -196,11 +199,16 @@ else:
             audit_df.sort_values("Timestamp", ascending=False),
             column_config={
                 "Rating": st.column_config.NumberColumn("Stars", format="%d ⭐"),
-                "Recommended": st.column_config.TextColumn("Recognition?"),
                 "Timestamp": st.column_config.DatetimeColumn("Date & Time")
             },
-            use_container_width=True,
-            hide_index=True
+            use_container_width=True, hide_index=True
         )
+
+        st.divider()
+        towrap = io.BytesIO()
+        with pd.ExcelWriter(towrap, engine='xlsxwriter') as writer:
+            audit_df.to_excel(writer, index=False, sheet_name='Latest_Audit_Report')
+        
+        st.download_button("📥 Download Excel (Latest Entries Only)", data=towrap.getvalue(), file_name=f"Audit_Report_v16_2.xlsx", mime="application/vnd.ms-excel")
     else:
-        st.info("No performance logs found to audit.")
+        st.info("No performance logs found.")
