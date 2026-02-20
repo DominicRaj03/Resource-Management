@@ -13,7 +13,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V12.7", layout="wide")
+st.set_page_config(page_title="Resource Management V12.9", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -34,8 +34,33 @@ def get_data(sheet_name):
     except Exception:
         return pd.DataFrame()
 
+# --- NEW: SYSTEM REPAIR UTILITY ---
+def run_system_repair():
+    st.sidebar.subheader("🛠️ System Health")
+    if st.sidebar.button("Scan & Repair Database"):
+        try:
+            # Check Master_List
+            m_df = get_data("Master_List")
+            m_required = ["Resource Name", "Project", "Goal", "Year", "Month"]
+            for col in m_required:
+                if col not in m_df.columns: m_df[col] = ""
+            conn.update(worksheet="Master_List", data=m_df)
+            
+            # Check Performance_Log
+            p_df = get_data("Performance_Log")
+            p_required = ["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating", "Comments", "Timestamp"]
+            for col in p_required:
+                if col not in p_df.columns: p_df[col] = ""
+            conn.update(worksheet="Performance_Log", data=p_df)
+            
+            st.sidebar.success("Database Repaired! Columns synced.")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Repair failed: {e}")
+
+run_system_repair()
+
 # --- Navigation ---
-st.sidebar.title("Resource Management V12.7")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard"])
 
 years_list = ["2024", "2025", "2026", "2027"]
@@ -50,7 +75,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v12_7", clear_on_submit=True):
+        with st.form("goal_v12_9", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -69,15 +94,21 @@ if page == "Master List":
         if not master_df.empty:
             master_prep = master_df.copy()
             master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
-            req_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Timestamp']
+            
+            # Column Safety Logic
             if not log_df.empty:
-                existing_cols = [c for c in req_cols if c in log_df.columns]
-                log_subset = log_df[existing_cols].copy().drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
+                # Dynamically select only available columns from Log to avoid KeyError
+                avail_log_cols = [c for c in ['Resource Name', 'Goal', 'Status', 'Rating', 'Timestamp'] if c in log_df.columns]
+                log_subset = log_df[avail_log_cols].copy().drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
                 unified_df = pd.merge(master_prep, log_subset, on=['Resource Name', 'Goal'], how='left')
             else:
                 unified_df = master_prep.copy()
-                for col in ['Status', 'Rating', 'Timestamp']: unified_df[col] = None
-            unified_df['Status'] = unified_df['Status'].fillna('⏳ Pending Evaluation')
+            
+            # Fill missing log values for visual consistency
+            for col in ['Status', 'Rating', 'Timestamp']:
+                if col not in unified_df.columns: unified_df[col] = "N/A"
+                if col == 'Status': unified_df[col] = unified_df[col].fillna('⏳ Pending Evaluation')
+                else: unified_df[col] = unified_df[col].fillna("-")
 
             c1, c2, c3, c4 = st.columns(4)
             f_p = c1.selectbox("Project", ["All"] + sorted(unified_df["Project"].unique().tolist()))
@@ -92,10 +123,10 @@ if page == "Master List":
             if f_m != "All": final_df = final_df[final_df["Month"] == f_m]
 
             def color_status(val):
-                color = '#90EE90' if val == 'Achieved' else '#FFCCCB' if val == 'Not Completed' else '#FFFFE0' if val == 'Partially Achieved' else 'white'
+                color = '#90EE90' if val == 'Achieved' else '#FFCCCB' if val == 'Not Completed' else '#FFFFE0' if val == 'Partially Achieved' else 'none'
                 return f'background-color: {color}; color: black'
 
-            st.dataframe(final_df[['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']].style.applymap(color_status, subset=['Status']), use_container_width=True)
+            st.dataframe(final_df.style.applymap(color_status, subset=['Status']), use_container_width=True)
 
 # --- SCREEN: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
@@ -109,10 +140,10 @@ elif page == "Performance Capture":
             g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
-            with st.form("cap_v12_7"):
+            with st.form("cap_v12_9"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 comments, rating = st.text_area("Comments*"), st.feedback("stars")
-                if st.form_submit_button("💾 Save Evaluation"):
+                if st.form_submit_button("💾 Save"):
                     new_e = pd.DataFrame([{"Project": p_sel, "Resource Name": r_sel, "MM/YYYY": f"{res_info['Month']}/{res_info['Year']}", "Goal": res_info['Goal'], "Status": status, "Rating": (rating+1 if rating else 0), "Comments": comments, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
                     st.success("Saved!"); st.rerun()
@@ -123,48 +154,30 @@ else:
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     
     if not master_df.empty:
-        # --- YoY COMPARISON TOGGLE ---
-        with st.expander("🔄 Year-over-Year (YoY) Comparison Tools"):
+        # Comparison Toggle
+        with st.expander("🔄 YoY Comparison"):
             mode = st.toggle("Enable Comparison Mode")
-            if mode:
+            if mode and HAS_PLOTLY:
                 y1, y2 = st.columns(2)
                 base_year = y1.selectbox("Base Year", years_list, index=1)
                 comp_year = y2.selectbox("Comparison Year", years_list, index=2)
-                
-                # Logic for YoY overlay
-                def get_yoy_data(df, year):
-                    return df[df['Year'] == year].groupby('Month')['Goal'].count().reindex(months_list).fillna(0).reset_index()
+                def get_v(df, yr): return df[df['Year'] == yr].groupby('Month')['Goal'].count().reindex(months_list).fillna(0)
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=months_list, y=get_v(master_df, base_year), name=base_year))
+                fig.add_trace(go.Scatter(x=months_list, y=get_v(master_df, comp_year), name=comp_year))
+                st.plotly_chart(fig, use_container_width=True)
 
-                base_data = get_yoy_data(master_df, base_year)
-                comp_data = get_yoy_data(master_df, comp_year)
-                
-                fig_yoy = go.Figure()
-                fig_yoy.add_trace(go.Scatter(x=months_list, y=base_data['Goal'], name=f"{base_year} Velocity", line=dict(dash='dash')))
-                fig_yoy.add_trace(go.Scatter(x=months_list, y=comp_data['Goal'], name=f"{comp_year} Velocity"))
-                st.plotly_chart(fig_yoy, use_container_width=True)
-
-        # Main Stats Ribbon
         st.divider()
-        audit_full = pd.merge(master_df, log_df[['Resource Name', 'Goal', 'Status']], on=['Resource Name', 'Goal'], how='left')
+        audit_full = pd.merge(master_df, log_df[['Resource Name', 'Goal', 'Status']] if not log_df.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status']), on=['Resource Name', 'Goal'], how='left')
         audit_full['Status'] = audit_full['Status'].fillna('Pending')
         
         k1, k2, k3 = st.columns(3)
-        k1.metric("Lifetime Goals", len(audit_full))
+        k1.metric("Total Goals", len(audit_full))
         k2.metric("Achieved", len(audit_full[audit_full['Status'] == 'Achieved']))
-        k3.metric("Pending Eval", len(audit_full[audit_full['Status'] == 'Pending']))
+        k3.metric("Pending", len(audit_full[audit_full['Status'] == 'Pending']))
 
         if HAS_PLOTLY:
-            # Monthly Planning Volume
-            st.divider()
-            st.subheader("📈 Planning Volume (All Years)")
-            v_df = master_df.copy()
-            v_df['MM/YYYY'] = v_df['Month'] + "/" + v_df['Year']
-            v_plot = v_df.groupby("MM/YYYY")["Goal"].count().reset_index()
-            st.plotly_chart(px.line(v_plot, x="MM/YYYY", y="Goal", markers=True), use_container_width=True)
-
-            # Project Burn-down
-            st.divider()
-            st.subheader("🔥 Project Progress (%)")
+            st.subheader("🔥 Project Progress")
             proj_stats = audit_full.groupby(['Project', 'Status']).size().unstack(fill_value=0)
             if 'Achieved' not in proj_stats.columns: proj_stats['Achieved'] = 0
             proj_stats['Total'] = proj_stats.sum(axis=1)
