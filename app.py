@@ -4,8 +4,16 @@ import pandas as pd
 from datetime import datetime
 import io
 
+# --- Plotly Integration ---
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
+
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V9.8", layout="wide")
+st.set_page_config(page_title="Resource Management V9.7", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -22,14 +30,18 @@ def get_data(sheet_name):
         return pd.DataFrame()
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V9.8")
+st.sidebar.title("Resource Management V9.7")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View", "Analytics Dashboard"])
 
 # Constants
 years = ["2025", "2026", "2027"]
 months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+q_map = {
+    "Q1 (Jan-Mar)": ["Jan", "Feb", "Mar"], "Q2 (Apr-Jun)": ["Apr", "May", "Jun"],
+    "Q3 (Jul-Sep)": ["Jul", "Aug", "Sep"], "Q4 (Oct-Dec)": ["Oct", "Nov", "Dec"]
+}
 
-# --- SCREEN: MASTER LIST (PRESERVED) ---
+# --- SCREEN: MASTER LIST ---
 if page == "Master List":
     st.title("👤 Resource Master List")
     tab1, tab2 = st.tabs(["🆕 Register & Add Goals", "📋 Filtered List View"])
@@ -39,14 +51,15 @@ if page == "Master List":
     with tab1:
         st.subheader("Assign Goals to Resource")
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v9_8"):
+        with st.form("goal_v9_7"):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource Name*", sorted(master_df["Resource Name"].unique().tolist()))
                 res_proj = c2.text_input("Project", value=master_df[master_df["Resource Name"] == res_name]["Project"].iloc[0], disabled=True)
             else:
                 res_name, res_proj = c1.text_input("Name*"), c2.text_input("Project*")
-            y, m = st.selectbox("Year", years), st.selectbox("Month", months)
+            cd1, cd2 = st.columns(2)
+            y, m = cd1.selectbox("Year", years), cd2.selectbox("Month", months)
             g = st.text_area("Goal Details*")
             if st.form_submit_button("🎯 Add Goal"):
                 if res_name and res_proj and g:
@@ -56,10 +69,21 @@ if page == "Master List":
 
     with tab2:
         if not master_df.empty:
-            for i, row in master_df.iterrows():
-                st.expander(f"{row['Resource Name']} - {row['Goal'][:30]}").write(row)
+            st.subheader("🔍 Goal Management")
+            f1, f2, f3, f4 = st.columns(4)
+            fp = f1.selectbox("Project", ["All"] + sorted(master_df["Project"].unique().tolist()))
+            fn = f2.selectbox("Name", ["All"] + sorted(master_df[master_df["Project"] == fp]["Resource Name"].unique().tolist() if fp != "All" else master_df["Resource Name"].unique().tolist()))
+            fy, fm = f3.selectbox("Year", ["All"] + years), f4.selectbox("Month", ["All"] + months)
+            v_df = master_df.copy()
+            if fp != "All": v_df = v_df[v_df["Project"] == fp]
+            if fn != "All": v_df = v_df[v_df["Resource Name"] == fn]
+            if fy != "All": v_df = v_df[v_df["Year"] == fy]
+            if fm != "All": v_df = v_df[v_df["Month"] == fm]
+            for i, row in v_df.iterrows():
+                is_eval = not log_df[(log_df["Resource Name"] == row["Resource Name"]) & (log_df["Goal"] == row["Goal"])].empty if not log_df.empty else False
+                st.expander(f"{'✅' if is_eval else '⏳'} {row['Resource Name']} - {row['Goal'][:30]}").write(row)
 
-# --- SCREEN: PERFORMANCE CAPTURE (PRESERVED) ---
+# --- SCREEN: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
@@ -71,7 +95,7 @@ elif page == "Performance Capture":
             g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
-            with st.form("cap_v9_8"):
+            with st.form("cap_v9_7"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 comments, rating = st.text_area("Comments*"), st.feedback("stars")
                 if st.form_submit_button("💾 Save"):
@@ -79,38 +103,27 @@ elif page == "Performance Capture":
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
                     st.success("Saved!"); st.rerun()
 
-# --- SCREEN: HISTORICAL VIEW (FIXED AUDIT LOGIC) ---
+# --- SCREEN: HISTORICAL VIEW (FIXED KEYERROR) ---
 elif page == "Historical View":
     st.title("📅 Unified Historical Audit")
-    master_df = get_data("Master_List")
-    log_df = get_data("Performance_Log")
+    master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     
     if not master_df.empty:
         master_prep = master_df.copy()
-        master_prep['MM/YYYY'] = master_prep['Month'].astype(str) + "/" + master_prep['Year'].astype(str)
+        master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
         
-        # --- FIXED LOGIC START ---
-        # 1. Identify which columns actually exist in the log sheet to avoid KeyError
-        available_cols = log_df.columns.tolist() if not log_df.empty else []
-        required_data = ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Timestamp']
-        existing_data_cols = [c for c in required_data if c in available_cols]
-        
-        # 2. Perform merge only if we have at least the keys
-        if not log_df.empty and 'Resource Name' in available_cols and 'Goal' in available_cols:
-            # We use log_df[existing_data_cols] to only pull what exists
-            unified_df = pd.merge(master_prep, log_df[existing_data_cols], on=['Resource Name', 'Goal'], how='left')
+        # Validation: Check if log_df has data and necessary columns
+        req_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Comments', 'Timestamp']
+        if not log_df.empty and all(col in log_df.columns for col in req_cols):
+            unified_df = pd.merge(master_prep, log_df[req_cols], on=['Resource Name', 'Goal'], how='left')
         else:
-            # Fallback if log is empty or columns missing
+            # If log is empty, create empty columns for the join
             unified_df = master_prep.copy()
             for col in ['Status', 'Rating', 'Comments', 'Timestamp']:
                 unified_df[col] = None
-        
-        # 3. Handle Status Display Correctly
-        # If 'Status' is null, it means it was never evaluated in Performance Capture
+
         unified_df['Status'] = unified_df['Status'].fillna('⏳ Pending Evaluation')
         unified_df['Timestamp'] = unified_df['Timestamp'].fillna('N/A')
-        unified_df['Rating'] = unified_df['Rating'].fillna('None')
-        # --- FIXED LOGIC END ---
         
         f_p = st.selectbox("Filter Project", ["All"] + sorted(unified_df["Project"].unique().tolist()))
         final_df = unified_df[unified_df["Project"] == f_p] if f_p != "All" else unified_df
@@ -119,16 +132,26 @@ elif page == "Historical View":
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
             final_df.to_excel(writer, index=False)
         st.download_button("📥 Export Audit Excel", data=buf.getvalue(), file_name="Unified_Audit.xlsx")
-        
-        # Display prioritized columns for visibility
-        display_cols = ['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']
-        st.dataframe(final_df[display_cols], use_container_width=True)
-    else:
-        st.warning("Master List is empty. Please add resources first.")
+        st.dataframe(final_df[['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']], use_container_width=True)
 
 # --- SCREEN: ANALYTICS DASHBOARD ---
 else:
     st.title("📊 Performance Analytics")
     df = get_data("Performance_Log")
     if not df.empty:
-        st.write("Analytics dashboard active. Filter by year/quarter to view trends.")
+        t1, t2 = st.columns(2)
+        sel_y, sel_p = t1.selectbox("Year", years), t2.selectbox("Period", ["Full Year"] + list(q_map.keys()))
+        f_df = df[df["MM/YYYY"].str.contains(sel_y)] if not df.empty else df
+        if sel_p != "Full Year":
+            f_df = f_df[f_df["MM/YYYY"].str.split('/').str[0].isin(q_map[sel_p])]
+        
+        if not f_df.empty:
+            st.subheader("🌟 Top 3 Performers")
+            top_3 = f_df.groupby("Resource Name")["Rating"].mean().sort_values(ascending=False).head(3)
+            cols = st.columns(3)
+            for i, (name, rating) in enumerate(top_3.items()):
+                cols[i].metric(label=name, value=f"{rating:.2f} ⭐")
+            
+            st.divider(); st.subheader("🏥 Project Health Index")
+            health = f_df.groupby("Project").agg(Total_Goals=('Goal', 'count'), Success_Rate=('Status', lambda x: f"{(x=='Achieved').sum()/len(x)*100:.1f}%"), Avg_Rating=('Rating', 'mean')).reset_index()
+            st.table(health)
