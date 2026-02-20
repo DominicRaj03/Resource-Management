@@ -1,123 +1,149 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime
 import io
+from datetime import datetime
 
 # --- Page Config ---
-st.set_page_config(page_title="Resource Management System", layout="wide")
+st.set_page_config(page_title="Jarvis Performance Capture", layout="wide", page_icon="🎯")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(sheet_name):
+    # ttl=0 ensures we always get the freshest data from Google Sheets
     return conn.read(worksheet=sheet_name, ttl=0)
 
+def get_next_month(current_month):
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    try:
+        idx = months.index(current_month)
+        return months[(idx + 1) % 12]
+    except:
+        return "Jan"
+
 # --- Navigation ---
-page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture"])
+st.sidebar.title("Jarvis Menu")
+page = st.sidebar.radio("Navigate to:", ["1. Master List", "2. Performance Capture", "3. Analytics & Export"])
 
 # --- SCREEN 1: MASTER LIST ---
-if page == "Master List":
-    st.title("📂 Resource Master List")
+if page == "1. Master List":
+    st.header("👤 Resource Master List")
+    st.subheader("Add New Resource & Goals")
     
-    with st.form("add_resource_form", clear_on_submit=True):
+    with st.form("master_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         name = col1.text_input("Resource Name*")
-        desig = col2.text_input("Designation")
-        exp = col1.text_input("Experience")
         proj = col2.text_input("Project Name*")
-        goal = st.text_area("Goal Description")
-        month = st.selectbox("Completion Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+        desig = col1.selectbox("Designation", ["Developer", "Senior Developer", "Lead", "Manager", "QA", "Designer"])
+        exp = col2.text_input("Experience (Years/Months)")
         
-        if st.form_submit_button("Add to Master List"):
+        goal = st.text_area("Primary Goal Description")
+        month = st.selectbox("Target Completion Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+        
+        if st.form_submit_button("Save Resource to Master"):
             if name and proj:
-                new_data = pd.DataFrame([{
+                new_row = pd.DataFrame([{
                     "Resource Name": name, "Goal": goal, "Month": month, 
                     "Project": proj, "Experience": exp, "Designation": desig
                 }])
                 master_df = get_data("Master_List")
-                updated_df = pd.concat([master_df, new_data], ignore_index=True)
+                updated_df = pd.concat([master_df, new_row], ignore_index=True)
                 conn.update(worksheet="Master_List", data=updated_df)
-                st.success(f"Resource {name} added!")
+                st.success(f"Resource {name} successfully added to {proj}!")
             else:
-                st.error("Please fill in Name and Project.")
+                st.error("Please fill in the required fields (*) to proceed.")
 
-    st.subheader("Current Resources")
+    st.divider()
+    st.subheader("Current Master Database")
     st.dataframe(get_data("Master_List"), use_container_width=True)
 
 # --- SCREEN 2: PERFORMANCE CAPTURE ---
-else:
-    st.title("📈 Performance Capture")
+elif page == "2. Performance Capture":
+    st.header("📈 Performance Capture")
     master_df = get_data("Master_List")
     
-    if master_df.empty:
-        st.warning("No resources found. Please add them in the Master List first.")
-    else:
-        # Filters
-        proj_list = master_df["Project"].unique()
-        selected_proj = st.sidebar.selectbox("Filter by Project", proj_list)
+    if not master_df.empty:
+        # Filtering logic
+        st.sidebar.subheader("Filters")
+        proj_filter = st.sidebar.selectbox("Filter by Project", master_df["Project"].unique())
         
-        res_list = master_df[master_df["Project"] == selected_proj]["Resource Name"].tolist()
-        selected_res = st.selectbox("Select Resource", res_list)
+        filtered_resources = master_df[master_df["Project"] == proj_filter]
+        sel_res = st.selectbox("Select Resource to Evaluate", filtered_resources["Resource Name"].unique())
         
-        # Get selected resource's goal
-        current_goal = master_df[(master_df["Resource Name"] == selected_res) & (master_df["Project"] == selected_proj)]["Goal"].values[0]
-        st.info(f"**Target Goal:** {current_goal}")
+        # Pull Goal Data
+        res_info = filtered_resources[filtered_resources["Resource Name"] == sel_res].iloc[0]
+        st.info(f"**Assigned Goal for {res_info['Month']}:** {res_info['Goal']}")
 
-        # Review Form
+        # Evaluation Form
         with st.container(border=True):
-            status = st.radio("Goal Status", ["Achieved", "Partially Achieved", "Not Completed"], horizontal=True)
+            status = st.selectbox("Goal Status", ["Achieved", "Partially Achieved", "Not Completed"])
             
-            # Conditional Inputs
-            perc_comp = 100
-            revised_date = ""
-            if status == "Partially Achieved":
-                perc_comp = st.number_input("Percentage of Completion (%)", 0, 99)
-                justification = st.text_area("Justification")
+            # Logic based on requirements
+            perc, revised, justification = 100, "N/A", ""
+            
+            if status == "Achieved":
+                justification = st.text_area("Justification (Comments & Attachment Links)")
+                st.file_uploader("Upload Attachments for Justification")
+                
+            elif status == "Partially Achieved":
+                perc = st.slider("Percentage of Completion (%)", 0, 99)
+                justification = st.text_area("Justification for Partial Completion")
+                
             elif status == "Not Completed":
-                perc_comp = 0
-                revised_date = st.date_input("Revised Date/Month to Close")
-                justification = st.text_area("Comments")
-            else:
-                justification = st.text_area("Justification & Comments")
-                st.file_uploader("Upload Attachments (Optional)")
+                perc = 0
+                justification = st.text_area("Reason for Non-Completion")
+                revised = st.text_input("Revised Date/Month to Close")
 
-            rating = st.feedback("stars") # Built-in 5-star rating (0-4 index)
-            final_feedback = st.text_area("Final Feedback / Suggestions")
+            rating = st.feedback("stars") # 1 to 5 stars
+            final_fb = st.text_area("Final Feedback / Suggestions")
 
-            col_a, col_b = st.columns(2)
+            c1, c2 = st.columns(2)
             
-            # Save Action
-            if col_a.button("Submit Performance Log"):
-                perf_row = pd.DataFrame([{
-                    "Resource Name": selected_res, "Project": selected_proj, "Status": status,
-                    "Rating": (rating + 1) if rating is not None else 0, "Comments": justification,
-                    "Completion %": perc_comp, "Revised Date": str(revised_date), "Feedback": final_feedback
+            if c1.button("💾 Save Performance Record", use_container_width=True):
+                log_row = pd.DataFrame([{
+                    "Date": datetime.now().strftime("%Y-%m-%d"),
+                    "Resource Name": sel_res, "Project": proj_filter, "Status": status,
+                    "Rating": (rating + 1) if rating is not None else 0,
+                    "Comments": justification, "Completion %": perc, 
+                    "Revised Date": revised, "Feedback": final_fb
                 }])
                 log_df = get_data("Performance_Log")
-                updated_log = pd.concat([log_df, perf_row], ignore_index=True)
-                conn.update(worksheet="Performance_Log", data=updated_log)
-                st.success("Performance recorded!")
+                conn.update(worksheet="Performance_Log", data=pd.concat([log_df, log_row], ignore_index=True))
+                st.success(f"Performance for {sel_res} has been logged.")
 
-            # Extend Goal Action
-            if col_b.button("Extend Goal to Next Period"):
-                new_row = master_df[master_df["Resource Name"] == selected_res].copy()
-                # logic to move month could be added here
-                updated_master = pd.concat([master_df, new_row], ignore_index=True)
+            if c2.button("➕ Extend Goal to Next Month", use_container_width=True):
+                next_mo = get_next_month(res_info['Month'])
+                ext_row = pd.DataFrame([{
+                    "Resource Name": sel_res, "Goal": res_info['Goal'], 
+                    "Month": next_mo, "Project": proj_filter, 
+                    "Experience": res_info['Experience'], "Designation": res_info['Designation']
+                }])
+                updated_master = pd.concat([master_df, ext_row], ignore_index=True)
                 conn.update(worksheet="Master_List", data=updated_master)
-                st.info("Goal extended in Master List.")
+                st.warning(f"Goal extended! {sel_res} now has a duplicate goal for {next_mo}.")
+    else:
+        st.warning("No resources found. Please populate the Master List first.")
 
-        # Export to Excel
-        st.divider()
-        if st.button("Generate Excel Report"):
-            full_log = get_data("Performance_Log")
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                full_log.to_excel(writer, index=False, sheet_name='Performance_Report')
-            
-            st.download_button(
-                label="📥 Download Excel File",
-                data=buffer.getvalue(),
-                file_name=f"Performance_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.ms-excel"
-            )
+# --- SCREEN 3: ANALYTICS & EXCEL EXPORT ---
+else:
+    st.header("📊 Performance Analytics & Export")
+    perf_df = get_data("Performance_Log")
+    
+    if not perf_df.empty:
+        st.dataframe(perf_df, use_container_width=True)
+        
+        # Prepare Excel file
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            perf_df.to_excel(writer, index=False, sheet_name='Performance_Report')
+        
+        st.download_button(
+            label="📥 Export Full Report to Excel",
+            data=buffer.getvalue(),
+            file_name=f"Performance_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True
+        )
+    else:
+        st.info("No performance records found to export.")
