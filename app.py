@@ -4,8 +4,15 @@ import pandas as pd
 from datetime import datetime
 import io
 
+# --- Plotly Integration ---
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
+
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V10.1", layout="wide")
+st.set_page_config(page_title="Resource Management V10.4", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -26,7 +33,7 @@ def get_data(sheet_name):
         return pd.DataFrame()
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V10.1")
+st.sidebar.title("Resource Management V10.4")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View", "Analytics Dashboard"])
 
 years = ["2025", "2026", "2027"]
@@ -37,12 +44,11 @@ if page == "Master List":
     st.title("👤 Resource Master List")
     tab1, tab2 = st.tabs(["🆕 Register & Add Goals", "📋 Filtered List View"])
     master_df = get_data("Master_List")
-    log_df = get_data("Performance_Log")
 
     with tab1:
         st.subheader("Assign Goals to Resource")
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v10_1", clear_on_submit=True):
+        with st.form("goal_v10_4", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource Name*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -76,7 +82,7 @@ elif page == "Performance Capture":
             g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
-            with st.form("cap_v10_1"):
+            with st.form("cap_v10_4"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 comments, rating = st.text_area("Comments*"), st.feedback("stars")
                 if st.form_submit_button("💾 Save"):
@@ -88,39 +94,39 @@ elif page == "Performance Capture":
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
                     st.success("Saved!"); st.rerun()
 
-# --- SCREEN: HISTORICAL VIEW (FIXED STATUS LOGIC) ---
+# --- SCREEN: HISTORICAL VIEW ---
 elif page == "Historical View":
     st.title("📅 Unified Historical Audit")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
-    
     if not master_df.empty:
         master_prep = master_df.copy()
         master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
-        
-        # FIXED: Ensure column alignment and clean whitespace for matching
         req_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Timestamp']
         if not log_df.empty:
             log_subset = log_df[[c for c in req_cols if c in log_df.columns]].copy()
-            # Drop duplicates in log to avoid row explosion in audit
             log_subset = log_subset.drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
             unified_df = pd.merge(master_prep, log_subset, on=['Resource Name', 'Goal'], how='left')
         else:
             unified_df = master_prep.copy()
             for col in ['Status', 'Rating', 'Timestamp']: unified_df[col] = None
 
-        # FINAL LOGIC: Default to 'Pending' ONLY if merge produced NaN
+        # Apply status logic defaults
         unified_df['Status'] = unified_df['Status'].fillna('⏳ Pending Evaluation')
         unified_df['Rating'] = unified_df['Rating'].fillna('None')
         unified_df['Timestamp'] = unified_df['Timestamp'].fillna('N/A')
         
-        f_p = st.selectbox("Filter Project", ["All"] + sorted(unified_df["Project"].unique().tolist()))
-        final_df = unified_df[unified_df["Project"] == f_p] if f_p != "All" else unified_df
+        c1, c2 = st.columns(2)
+        f_p = c1.selectbox("Filter Project", ["All"] + sorted(unified_df["Project"].unique().tolist()))
+        f_v = c2.radio("View Mode", ["All Goals", "Evaluated Only", "Pending Only"], horizontal=True)
+        
+        final_df = unified_df.copy()
+        if f_p != "All": final_df = final_df[final_df["Project"] == f_p]
+        if f_v == "Evaluated Only": final_df = final_df[final_df["Status"] != '⏳ Pending Evaluation']
+        elif f_v == "Pending Only": final_df = final_df[final_df["Status"] == '⏳ Pending Evaluation']
         
         st.dataframe(final_df[['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']], use_container_width=True)
-        
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            final_df.to_excel(writer, index=False)
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: final_df.to_excel(writer, index=False)
         st.download_button("📥 Export Audit Excel", data=buf.getvalue(), file_name="Unified_Audit.xlsx")
 
 # --- SCREEN: ANALYTICS DASHBOARD ---
@@ -128,5 +134,17 @@ else:
     st.title("📊 Performance Analytics")
     df = get_data("Performance_Log")
     if not df.empty:
-        st.write("Analytics View Active")
-        st.table(df.groupby("Project")["Status"].value_counts().unstack().fillna(0))
+        st.subheader("Project Status Distribution")
+        health = df.groupby("Project")["Status"].value_counts().unstack().fillna(0)
+        st.table(health)
+        
+        if HAS_PLOTLY:
+            st.divider()
+            st.subheader("📈 Performance Trend (Average Stars)")
+            trend_df = df.groupby("MM/YYYY")["Rating"].mean().reset_index()
+            trend_df['Date_Sort'] = pd.to_datetime(trend_df['MM/YYYY'], format='%b/%Y')
+            trend_df = trend_df.sort_values('Date_Sort')
+            
+            fig = px.line(trend_df, x='MM/YYYY', y='Rating', markers=True, title="Month-on-Month Performance")
+            fig.update_yaxes(range=[0, 5.5])
+            st.plotly_chart(fig, use_container_width=True)
