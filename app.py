@@ -5,7 +5,7 @@ from datetime import datetime
 import io
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V11.3", layout="wide")
+st.set_page_config(page_title="Resource Management V11.4", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -25,7 +25,7 @@ def get_data(sheet_name):
         return pd.DataFrame()
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V11.3")
+st.sidebar.title("Resource Management V11.4")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View", "Analytics Dashboard"])
 
 years_list = ["2025", "2026", "2027"]
@@ -38,7 +38,7 @@ if page == "Master List":
     master_df = get_data("Master_List")
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v11_3", clear_on_submit=True):
+        with st.form("goal_v11_4", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -69,7 +69,7 @@ elif page == "Performance Capture":
             g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
-            with st.form("cap_v11_3"):
+            with st.form("cap_v11_4"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 comments, rating = st.text_area("Comments*"), st.feedback("stars")
                 if st.form_submit_button("💾 Save"):
@@ -77,7 +77,7 @@ elif page == "Performance Capture":
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
                     st.success("Saved!"); st.rerun()
 
-# --- SCREEN: HISTORICAL VIEW (FIXED) ---
+# --- SCREEN: HISTORICAL VIEW (WITH COLOR HIGHLIGHTING) ---
 elif page == "Historical View":
     st.title("📅 Unified Historical Audit")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
@@ -86,7 +86,6 @@ elif page == "Historical View":
         master_prep = master_df.copy()
         master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
         
-        # Safe selection of columns to prevent KeyError
         req_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Timestamp', 'Comments']
         if not log_df.empty:
             existing_cols = [c for c in req_cols if c in log_df.columns]
@@ -97,9 +96,8 @@ elif page == "Historical View":
             for col in ['Status', 'Rating', 'Timestamp', 'Comments']: unified_df[col] = None
 
         unified_df['Status'] = unified_df['Status'].fillna('⏳ Pending Evaluation')
-        unified_df['Rating'] = unified_df['Rating'].fillna('None')
-
-        # --- FILTERS (AS REQUESTED) ---
+        
+        # --- FILTERS ---
         st.subheader("🔍 Filters")
         c1, c2, c3, c4 = st.columns(4)
         f_p = c1.selectbox("Project", ["All"] + sorted(unified_df["Project"].unique().tolist()))
@@ -113,12 +111,17 @@ elif page == "Historical View":
         if f_y != "All": final_df = final_df[final_df["Year"] == f_y]
         if f_m != "All": final_df = final_df[final_df["Month"] == f_m]
 
-        st.dataframe(final_df[['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']], use_container_width=True)
+        # Apply coloring to Status column
+        def color_status(val):
+            color = '#90EE90' if val == 'Achieved' else '#FFCCCB' if val == 'Not Completed' else '#FFFFE0' if val == 'Partially Achieved' else 'white'
+            return f'background-color: {color}; color: black'
+
+        st.dataframe(final_df[['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']].style.applymap(color_status, subset=['Status']), use_container_width=True)
         
-        # --- QUICK EDIT SECTION ---
+        # --- QUICK EDIT ---
         st.divider()
         st.subheader("✏️ Quick Evaluation")
-        edit_goal = st.selectbox("Choose Goal to Evaluate", final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:40]}...", axis=1))
+        edit_goal = st.selectbox("Select Goal", final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:40]}...", axis=1))
         
         if edit_goal:
             sel_idx = final_df.index[final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:40]}...", axis=1) == edit_goal][0]
@@ -134,9 +137,14 @@ elif page == "Historical View":
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, update_row], ignore_index=True))
                     st.success("Updated!"); st.rerun()
 
-        # Excel Export
+        # Excel Export with formatting
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: final_df.to_excel(writer, index=False)
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+            final_df.to_excel(writer, index=False, sheet_name='Audit')
+            workbook  = writer.book
+            worksheet = writer.sheets['Audit']
+            green_fmt = workbook.add_format({'bg_color': '#C6EFCE'})
+            worksheet.conditional_format('A1:Z100', {'type': 'text', 'criteria': 'containing', 'value': 'Achieved', 'format': green_fmt})
         st.download_button("📥 Export Audit Excel", data=buf.getvalue(), file_name="Historical_Audit.xlsx")
 
 # --- SCREEN: ANALYTICS ---
@@ -144,5 +152,4 @@ else:
     st.title("📊 Performance Analytics")
     df = get_data("Performance_Log")
     if not df.empty:
-        st.write("Summary by Project")
         st.table(df.groupby("Project")["Status"].value_counts().unstack().fillna(0))
