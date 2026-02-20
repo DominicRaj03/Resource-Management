@@ -5,7 +5,7 @@ from datetime import datetime
 import io
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V11.2", layout="wide")
+st.set_page_config(page_title="Resource Management V11.3", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -25,20 +25,20 @@ def get_data(sheet_name):
         return pd.DataFrame()
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V11.2")
+st.sidebar.title("Resource Management V11.3")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Historical View", "Analytics Dashboard"])
 
 years_list = ["2025", "2026", "2027"]
 months_list = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-# --- SCREEN: MASTER LIST (Unchanged) ---
+# --- SCREEN: MASTER LIST ---
 if page == "Master List":
     st.title("👤 Resource Master List")
     tab1, tab2 = st.tabs(["🆕 Register & Add Goals", "📋 Filtered List View"])
     master_df = get_data("Master_List")
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v11_2"):
+        with st.form("goal_v11_3", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -57,7 +57,7 @@ if page == "Master List":
             f1 = st.selectbox("Project Filter", ["All"] + sorted(master_df["Project"].unique().tolist()))
             st.dataframe(master_df[master_df["Project"] == f1] if f1 != "All" else master_df, use_container_width=True)
 
-# --- SCREEN: PERFORMANCE CAPTURE (Unchanged) ---
+# --- SCREEN: PERFORMANCE CAPTURE ---
 elif page == "Performance Capture":
     st.header("📈 Performance Capture")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
@@ -69,7 +69,7 @@ elif page == "Performance Capture":
             g_opts = avail.apply(lambda x: f"{x['Goal']} ({x['Month']} {x['Year']})", axis=1).tolist()
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
-            with st.form("cap_v11_2"):
+            with st.form("cap_v11_3"):
                 status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
                 comments, rating = st.text_area("Comments*"), st.feedback("stars")
                 if st.form_submit_button("💾 Save"):
@@ -77,19 +77,18 @@ elif page == "Performance Capture":
                     conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
                     st.success("Saved!"); st.rerun()
 
-# --- SCREEN: HISTORICAL VIEW (FIXED WITH FILTERS & EDIT) ---
+# --- SCREEN: HISTORICAL VIEW (FIXED) ---
 elif page == "Historical View":
     st.title("📅 Unified Historical Audit")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     
     if not master_df.empty:
-        # Merge logic to show ALL goals
         master_prep = master_df.copy()
         master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
         
+        # Safe selection of columns to prevent KeyError
         req_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Timestamp', 'Comments']
         if not log_df.empty:
-            # Fix for KeyError: only use columns that exist
             existing_cols = [c for c in req_cols if c in log_df.columns]
             log_subset = log_df[existing_cols].copy().drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
             unified_df = pd.merge(master_prep, log_subset, on=['Resource Name', 'Goal'], how='left')
@@ -100,8 +99,8 @@ elif page == "Historical View":
         unified_df['Status'] = unified_df['Status'].fillna('⏳ Pending Evaluation')
         unified_df['Rating'] = unified_df['Rating'].fillna('None')
 
-        # --- FILTERS ---
-        st.subheader("🔍 Search & Filter")
+        # --- FILTERS (AS REQUESTED) ---
+        st.subheader("🔍 Filters")
         c1, c2, c3, c4 = st.columns(4)
         f_p = c1.selectbox("Project", ["All"] + sorted(unified_df["Project"].unique().tolist()))
         f_r = c2.selectbox("Resource", ["All"] + sorted(unified_df["Resource Name"].unique().tolist()))
@@ -116,36 +115,34 @@ elif page == "Historical View":
 
         st.dataframe(final_df[['Project', 'Resource Name', 'MM/YYYY', 'Goal', 'Status', 'Rating', 'Timestamp']], use_container_width=True)
         
-        # --- EDIT OPTION ---
+        # --- QUICK EDIT SECTION ---
         st.divider()
-        st.subheader("✏️ Quick Edit Evaluation")
-        edit_goal = st.selectbox("Select Goal to Edit/Evaluate", final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:50]}...", axis=1))
+        st.subheader("✏️ Quick Evaluation")
+        edit_goal = st.selectbox("Choose Goal to Evaluate", final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:40]}...", axis=1))
         
         if edit_goal:
-            idx = final_df.index[final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:50]}...", axis=1) == edit_goal][0]
-            selected_row = final_df.loc[idx]
-            with st.form("quick_edit"):
-                new_status = st.selectbox("Update Status", ["Achieved", "Partially Achieved", "Not Completed"], 
-                                          index=["Achieved", "Partially Achieved", "Not Completed"].index(selected_row['Status']) if selected_row['Status'] in ["Achieved", "Partially Achieved", "Not Completed"] else 0)
-                new_comm = st.text_area("Update Comments", value=str(selected_row.get('Comments', '')))
-                if st.form_submit_button("💾 Update Evaluation"):
-                    # Logic to update/append to Performance Log
-                    update_entry = pd.DataFrame([{
-                        "Project": selected_row['Project'], "Resource Name": selected_row['Resource Name'],
-                        "MM/YYYY": selected_row['MM/YYYY'], "Goal": selected_row['Goal'],
-                        "Status": new_status, "Comments": new_comm, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            sel_idx = final_df.index[final_df.apply(lambda x: f"{x['Resource Name']} | {x['Goal'][:40]}...", axis=1) == edit_goal][0]
+            row = final_df.loc[sel_idx]
+            with st.form("historical_edit"):
+                new_stat = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
+                new_comm = st.text_area("Evaluation Comments", value=str(row.get('Comments', '')))
+                if st.form_submit_button("💾 Save Update"):
+                    update_row = pd.DataFrame([{
+                        "Project": row['Project'], "Resource Name": row['Resource Name'], "MM/YYYY": row['MM/YYYY'],
+                        "Goal": row['Goal'], "Status": new_stat, "Comments": new_comm, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }])
-                    conn.update(worksheet="Performance_Log", data=pd.concat([log_df, update_entry], ignore_index=True))
-                    st.success("Entry Updated!"); st.rerun()
+                    conn.update(worksheet="Performance_Log", data=pd.concat([log_df, update_row], ignore_index=True))
+                    st.success("Updated!"); st.rerun()
 
         # Excel Export
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: final_df.to_excel(writer, index=False)
         st.download_button("📥 Export Audit Excel", data=buf.getvalue(), file_name="Historical_Audit.xlsx")
 
-# --- SCREEN: ANALYTICS (Unchanged) ---
+# --- SCREEN: ANALYTICS ---
 else:
     st.title("📊 Performance Analytics")
     df = get_data("Performance_Log")
     if not df.empty:
+        st.write("Summary by Project")
         st.table(df.groupby("Project")["Status"].value_counts().unstack().fillna(0))
