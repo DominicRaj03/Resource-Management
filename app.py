@@ -12,7 +12,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Resource Management V13.8", layout="wide")
+st.set_page_config(page_title="Resource Management V13.1", layout="wide")
 
 # --- Database Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -29,36 +29,34 @@ def get_data(sheet_name):
                     df[col] = df[col].astype(str).str.strip()
             if "Rating" in df.columns:
                 df["Rating"] = pd.to_numeric(df["Rating"], errors='coerce').fillna(0)
-            return df
-        return pd.DataFrame()
+        return df if df is not None else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
-# --- AUTOMATED SYSTEM REPAIR ---
-def auto_repair():
-    try:
-        m_df = get_data("Master_List")
-        m_req = ["Resource Name", "Project", "Goal", "Year", "Month"]
-        m_missing = [c for c in m_req if c not in m_df.columns]
-        
-        p_df = get_data("Performance_Log")
-        p_req = ["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating", "Comments", 
-                 "Recommended for Recognition", "Recognition Justification", "Timestamp"]
-        p_missing = [c for c in p_req if c not in p_df.columns]
-
-        if m_missing or p_missing:
-            for col in m_missing: m_df[col] = ""
+# --- System Repair Utility ---
+def run_system_repair():
+    st.sidebar.subheader("🛠️ System Health")
+    if st.sidebar.button("Scan & Repair Database"):
+        try:
+            m_df = get_data("Master_List")
+            m_required = ["Resource Name", "Project", "Goal", "Year", "Month"]
+            for col in m_required:
+                if col not in m_df.columns: m_df[col] = ""
             conn.update(worksheet="Master_List", data=m_df)
-            for col in p_missing: p_df[col] = ""
+            
+            p_df = get_data("Performance_Log")
+            p_required = ["Project", "Resource Name", "MM/YYYY", "Goal", "Status", "Rating", "Comments", "Recommended for Recognition", "Recognition Comments", "Timestamp"]
+            for col in p_required:
+                if col not in p_df.columns: p_df[col] = ""
             conn.update(worksheet="Performance_Log", data=p_df)
-            st.toast("System Repair: Columns synchronized.", icon="🛠️")
-    except Exception:
-        pass
+            st.sidebar.success("Database Repaired!")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Repair failed: {e}")
 
-auto_repair()
+run_system_repair()
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V13.8")
 page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Analytics Dashboard"])
 
 years_list = ["2024", "2025", "2026", "2027"]
@@ -68,11 +66,12 @@ months_list = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "O
 if page == "Master List":
     st.title("👤 Resource Master List")
     tab1, tab2 = st.tabs(["🆕 Register & Add Goals", "📋 Filtered List View (History)"])
-    master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
+    master_df = get_data("Master_List")
+    log_df = get_data("Performance_Log")
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v13_8", clear_on_submit=True):
+        with st.form("goal_v13_1", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 res_name = c1.selectbox("Resource*", sorted(master_df["Resource Name"].unique().tolist()))
@@ -90,14 +89,21 @@ if page == "Master List":
     with tab2:
         if not master_df.empty:
             master_prep = master_df.copy()
+            master_prep['MM/YYYY'] = master_prep['Month'] + "/" + master_prep['Year']
+            
             if not log_df.empty:
-                log_df['Timestamp'] = log_df.get('Timestamp', "2000-01-01 00:00:00")
-                log_clean = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
-                unified_df = pd.merge(master_prep, log_clean[['Resource Name', 'Goal', 'Status', 'Rating']], on=['Resource Name', 'Goal'], how='left')
+                target_cols = ['Resource Name', 'Goal', 'Status', 'Rating', 'Recommended for Recognition', 'Timestamp']
+                avail_log_cols = [c for c in target_cols if c in log_df.columns]
+                log_subset = log_df[avail_log_cols].copy().drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
+                unified_df = pd.merge(master_prep, log_subset, on=['Resource Name', 'Goal'], how='left')
             else:
                 unified_df = master_prep.copy()
-            
-            unified_df['Status'] = unified_df.get('Status', pd.Series(dtype=str)).fillna('Yet to Mark')
+
+            # --- UPDATED: "Yet to Mark" logic ---
+            unified_df['Status'] = unified_df['Status'].fillna('Yet to Mark')
+            if 'Recommended for Recognition' in unified_df.columns:
+                unified_df['Recommended for Recognition'] = unified_df['Recommended for Recognition'].fillna("No")
+
             c1, c2, c3, c4 = st.columns(4)
             f_p = c1.selectbox("Project Filter", ["All"] + sorted(unified_df["Project"].unique().tolist()))
             f_r = c2.selectbox("Resource Filter", ["All"] + sorted(unified_df["Resource Name"].unique().tolist()))
@@ -111,8 +117,12 @@ if page == "Master List":
             if f_m != "All": final_df = final_df[final_df["Month"] == f_m]
 
             def color_status(val):
-                colors = {'Achieved': '#2E7D32', 'Not Completed': '#C62828', 'Partially Achieved': '#F9A825', 'Yet to Mark': '#757575'}
-                return f'background-color: {colors.get(val, "none")}; color: white'
+                if val == 'Achieved': return 'background-color: #2E7D32; color: white'
+                if val == 'Not Completed': return 'background-color: #C62828; color: white'
+                if val == 'Partially Achieved': return 'background-color: #F9A825; color: black'
+                if val == 'Yet to Mark': return 'background-color: #757575; color: white'
+                return ''
+
             st.dataframe(final_df.style.applymap(color_status, subset=['Status']), use_container_width=True)
 
 # --- SCREEN: PERFORMANCE CAPTURE ---
@@ -129,62 +139,44 @@ elif page == "Performance Capture":
             sel_g = st.selectbox("Select Goal", g_opts)
             res_info = avail.iloc[g_opts.index(sel_g)]
             
-            with st.form("cap_v13_8"):
-                status = st.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
-                rating = st.feedback("stars")
+            with st.form("cap_v13_1", clear_on_submit=True):
+                col_a, col_b = st.columns(2)
+                status = col_a.selectbox("Status", ["Achieved", "Partially Achieved", "Not Completed"])
+                rating = col_b.feedback("stars")
                 comments = st.text_area("Evaluation Comments*")
                 
                 st.divider()
-                st.subheader("🌟 Recognition Program")
+                st.subheader("🌟 Recognition & Rewards")
                 is_rec = st.checkbox("Recommend for Recognition?")
-                justification = st.text_area("Justification (Optional)", placeholder="Why does this resource deserve recognition?")
+                rec_comments = st.text_area("Why does this resource deserve recognition?")
                 
                 if st.form_submit_button("💾 Save Performance Entry"):
-                    new_e = pd.DataFrame([{
-                        "Project": p_sel, "Resource Name": r_sel, "Goal": res_info['Goal'], "Status": status,
-                        "Rating": (rating+1 if rating is not None else 0), "Comments": comments,
+                    new_entry = pd.DataFrame([{
+                        "Project": p_sel, "Resource Name": r_sel, 
+                        "MM/YYYY": f"{res_info['Month']}/{res_info['Year']}", 
+                        "Goal": res_info['Goal'], "Status": status, 
+                        "Rating": (rating+1 if rating is not None else 0), 
+                        "Comments": comments,
                         "Recommended for Recognition": "Yes" if is_rec else "No",
-                        "Recognition Justification": justification if is_rec else "",
+                        "Recognition Comments": rec_comments if is_rec else "",
                         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }])
-                    conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
-                    st.success("Evaluation and Recognition details saved!"); st.rerun()
+                    conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_entry], ignore_index=True))
+                    st.success("Entry Saved!"); st.rerun()
 
 # --- SCREEN: ANALYTICS DASHBOARD ---
 else:
-    st.title("📊 Performance Insights")
+    st.title("📊 Performance Analytics")
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
+    
     if not master_df.empty:
-        # Analytics Project Filter
-        sel_proj = st.selectbox("Filter Dashboard by Project", ["All Projects"] + sorted(master_df["Project"].unique().tolist()))
-
-        log_latest = log_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last') if not log_df.empty else pd.DataFrame()
-        df = pd.merge(master_df, log_latest[['Resource Name', 'Goal', 'Status']] if not log_latest.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status']), on=['Resource Name', 'Goal'], how='left')
-        df['Status'] = df['Status'].fillna('Yet to Mark')
-
-        if sel_proj != "All Projects":
-            df = df[df['Project'] == sel_proj]
-
-        # KPI Logic
-        points_map = {'Achieved': 5, 'Partially Achieved': 3, 'Not Completed': 0, 'Yet to Mark': 0}
-        df['Points'] = df['Status'].map(points_map)
-        leaderboard = df.groupby('Resource Name')['Points'].sum().reset_index().sort_values('Points', ascending=False)
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Goals Found", len(df))
-        m2.metric("Achievement %", f"{(len(df[df['Status']=='Achieved'])/len(df)*100):.1f}%" if len(df)>0 else "0%")
-        m3.metric("Top Performer", leaderboard.iloc[0]['Resource Name'] if not leaderboard.empty else "N/A")
-
-        if HAS_PLOTLY and not df.empty:
-            st.divider()
-            c_l, c_r = st.columns(2)
-            with c_l:
-                st.subheader("🏆 Leaderboard")
-                fig_lead = px.bar(leaderboard.head(10), x='Points', y='Resource Name', orientation='h', color='Points', color_continuous_scale='Greens', text_auto=True)
-                st.plotly_chart(fig_lead, use_container_width=True)
-            with c_r:
-                st.subheader("🎯 Overall Status")
-                fig_pie = px.pie(df, names='Status', color='Status', color_discrete_map={'Achieved':'#2E7D32', 'Partially Achieved':'#F9A825', 'Not Completed':'#C62828', 'Yet to Mark':'#757575'})
-                st.plotly_chart(fig_pie, use_container_width=True)
+        audit_full = pd.merge(master_df, log_df[['Resource Name', 'Goal', 'Status']] if not log_df.empty else pd.DataFrame(columns=['Resource Name', 'Goal', 'Status']), on=['Resource Name', 'Goal'], how='left')
+        audit_full['Status'] = audit_full['Status'].fillna('Yet to Mark')
+        
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total Goals", len(audit_full))
+        k2.metric("Pending (Yet to Mark)", len(audit_full[audit_full['Status'] == 'Yet to Mark']))
+        achieved = len(audit_full[audit_full['Status'] == 'Achieved'])
+        k3.metric("Achievement Rate", f"{(achieved/len(audit_full)*100):.1f}%" if len(audit_full)>0 else "0%")
     else:
         st.warning("No data found.")
