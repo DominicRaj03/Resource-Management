@@ -10,7 +10,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-st.set_page_config(page_title="Resource Management V21.0", layout="wide")
+st.set_page_config(page_title="Resource Management V22.0", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 CURRENT_YEAR = str(datetime.now().year)
@@ -32,8 +32,15 @@ def get_data(sheet_name):
         return pd.DataFrame()
 
 # --- Navigation ---
-st.sidebar.title("Resource Management V21.0")
-page = st.sidebar.radio("Navigation", ["Master List", "Performance Capture", "Resource Utilisation", "Analytics Dashboard", "Audit Section"])
+st.sidebar.title("Resource Management V22.0")
+page = st.sidebar.radio("Navigation", [
+    "Master List", 
+    "Performance Capture", 
+    "Resource Utilisation", 
+    "Resource Profile", 
+    "Analytics Dashboard", 
+    "Audit Section"
+])
 
 # --- SCREEN: MASTER LIST ---
 if page == "Master List":
@@ -43,7 +50,7 @@ if page == "Master List":
 
     with tab1:
         res_type = st.radio("Resource Type", ["Existing Resource", "New Resource"], horizontal=True)
-        with st.form("goal_v21", clear_on_submit=True):
+        with st.form("goal_v22", clear_on_submit=True):
             c1, c2 = st.columns(2)
             if res_type == "Existing Resource" and not master_df.empty:
                 r_names = sorted(master_df["Resource Name"].unique().tolist())
@@ -61,6 +68,18 @@ if page == "Master List":
                     new_g = pd.DataFrame([{"Resource Name": res_name.strip(), "Project": res_proj.strip(), "Goal": g.strip(), "Year": str(y), "Month": m}])
                     conn.update(worksheet="Master_List", data=pd.concat([master_df, new_g], ignore_index=True))
                     st.success("Goal Saved!"); st.rerun()
+
+    with tab2:
+        st.subheader("📤 Bulk Goal Upload")
+        template_csv = pd.DataFrame(columns=["Resource Name", "Project", "Goal", "Year", "Month"]).to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Goal Template", data=template_csv, file_name="goal_template.csv")
+        uploaded_file = st.file_uploader("Upload File", type=['csv', 'xlsx'])
+        if uploaded_file:
+            import_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            if all(col in import_df.columns for col in ["Resource Name", "Project", "Goal", "Year", "Month"]):
+                if st.button("🚀 Confirm Import"):
+                    conn.update(worksheet="Master_List", data=pd.concat([master_df, import_df], ignore_index=True))
+                    st.success("Imported!"); st.rerun()
 
     with tab3:
         if not master_df.empty:
@@ -83,53 +102,93 @@ elif page == "Performance Capture":
         sel_p = c1.selectbox("Project", sorted(master_df["Project"].unique().tolist()))
         sel_r = c2.selectbox("Resource", sorted(master_df[master_df["Project"] == sel_p]["Resource Name"].unique().tolist()))
         sel_g = st.selectbox("Goal", master_df[(master_df["Project"] == sel_p) & (master_df["Resource Name"] == sel_r)]["Goal"].tolist())
-        with st.form("cap_v21"):
-            status = st.selectbox("Status", ["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"])
-            rating = st.feedback("stars")
-            comments = st.text_area("Comments*")
-            is_rec = st.checkbox("Recommend for Recognition?")
-            just = st.text_area("Justification")
-            if st.form_submit_button("💾 Save"):
-                new_e = pd.DataFrame([{"Resource Name": sel_r, "Goal": sel_g, "Status": status, "Rating": (rating+1 if rating is not None else 0), "Comments": comments, "Recommended": "Yes" if is_rec else "No", "Justification": just, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])
-                conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
-                st.success("Saved!"); st.rerun()
+        
+        can_edit = True
+        if not log_df.empty and not log_df[(log_df["Resource Name"] == sel_r) & (log_df["Goal"] == sel_g)].empty:
+            st.warning("⚠️ Already captured.")
+            can_edit = st.checkbox("Override previous entry?")
+
+        if can_edit:
+            with st.form("cap_v22"):
+                status = st.selectbox("Status", ["In-Progress", "Assigned", "Achieved", "Partially achieved", "Not completed"])
+                rating = st.feedback("stars")
+                comments = st.text_area("Comments*")
+                is_rec = st.checkbox("Recommend for Recognition?")
+                just = st.text_area("Justification")
+                if st.form_submit_button("💾 Save Performance"):
+                    if comments:
+                        new_e = pd.DataFrame([{
+                            "Resource Name": sel_r, "Goal": sel_g, "Status": status, 
+                            "Rating": (rating+1 if rating is not None else 0), "Comments": comments, 
+                            "Recommended": "Yes" if is_rec else "No", "Justification": just, 
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }])
+                        conn.update(worksheet="Performance_Log", data=pd.concat([log_df, new_e], ignore_index=True))
+                        st.success("Saved!"); st.rerun()
+                    else: st.error("Comments are required.")
 
 # --- SCREEN: RESOURCE UTILISATION ---
 elif page == "Resource Utilisation":
     st.title("💼 Resource Utilisation")
     master_df, util_df = get_data("Master_List"), get_data("Utilisation_Log")
-    tab_log, tab_bulk = st.tabs(["📝 Individual Update", "📤 Bulk Utilisation Import"])
+    t1, t2 = st.tabs(["📝 Manual Entry", "📤 Bulk Import"])
 
-    with tab_log:
+    with t1:
         if not master_df.empty:
-            total_team = master_df["Resource Name"].nunique()
-            bill_c = len(util_df[util_df["Type"] == "Billable"]["Resource Name"].unique()) if not util_df.empty else 0
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Total Team", total_team); k2.metric("Billable", bill_c); k3.metric("Non-Billable", total_team - bill_c)
-
-            with st.form("util_v21"):
+            with st.form("util_manual_v22"):
                 u_res = st.selectbox("Resource", sorted(master_df["Resource Name"].unique().tolist()))
                 u_proj = master_df[master_df["Resource Name"] == u_res]["Project"].iloc[0]
                 u_year = st.selectbox("Year", years_list, index=years_list.index(CURRENT_YEAR))
                 u_month = st.selectbox("Month", months_list)
                 u_type = st.radio("Type", ["Billable", "Non-Billable"], horizontal=True)
-                if st.form_submit_button("Update"):
+                if st.form_submit_button("Update Status"):
                     new_u = pd.DataFrame([{"Resource Name": u_res, "Project": u_proj, "Year": u_year, "Month": u_month, "Type": u_type, "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])
                     conn.update(worksheet="Utilisation_Log", data=pd.concat([util_df, new_u], ignore_index=True))
                     st.success("Updated!"); st.rerun()
 
-    with tab_bulk:
-        st.subheader("📤 Bulk Upload Utilisation")
+    with t2:
+        st.subheader("📤 Bulk Utilisation Upload")
         u_template = pd.DataFrame(columns=["Resource Name", "Project", "Year", "Month", "Type"]).to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Utilisation Template", data=u_template, file_name="util_template.csv")
+        st.download_button("📥 Download Template", data=u_template, file_name="util_template.csv")
         u_file = st.file_uploader("Upload Utilisation File", type=['csv', 'xlsx'])
         if u_file:
-            u_import_df = pd.read_csv(u_file) if u_file.name.endswith('.csv') else pd.read_excel(u_file)
-            if all(col in u_import_df.columns for col in ["Resource Name", "Project", "Year", "Month", "Type"]):
-                if st.button("🚀 Import Utilisation"):
-                    u_import_df["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    conn.update(worksheet="Utilisation_Log", data=pd.concat([util_df, u_import_df], ignore_index=True))
-                    st.success("Import Successful!"); st.rerun()
+            u_df = pd.read_csv(u_file) if u_file.name.endswith('.csv') else pd.read_excel(u_file)
+            if st.button("🚀 Import Data"):
+                u_df["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.update(worksheet="Utilisation_Log", data=pd.concat([util_df, u_df], ignore_index=True))
+                st.success("Import Successful!"); st.rerun()
+
+# --- NEW MODULE: RESOURCE PROFILE ---
+elif page == "Resource Profile":
+    st.title("👤 Resource Comprehensive Profile")
+    master_df, log_df, util_df = get_data("Master_List"), get_data("Performance_Log"), get_data("Utilisation_Log")
+    
+    if not master_df.empty:
+        sel_name = st.selectbox("Select Resource to View", sorted(master_df["Resource Name"].unique().tolist()))
+        
+        # Profile KPIs
+        p_logs = log_df[log_df["Resource Name"] == sel_name]
+        p_utils = util_df[util_df["Resource Name"] == sel_name]
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Goals Assigned", len(master_df[master_df["Resource Name"] == sel_name]))
+        c2.metric("Avg Performance Rating", f"{p_logs['Rating'].mean():.1f} ⭐" if not p_logs.empty else "N/A")
+        c3.metric("Latest Status", p_utils.sort_values('Timestamp').iloc[-1]['Type'] if not p_utils.empty else "Unknown")
+
+        st.divider()
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.subheader("🎯 Goal Status History")
+            if not p_logs.empty:
+                st.dataframe(p_logs[['Goal', 'Status', 'Timestamp']].sort_values('Timestamp', ascending=False), use_container_width=True, hide_index=True)
+            else: st.info("No performance logs for this resource.")
+            
+        with col_b:
+            st.subheader("📈 Rating Trend")
+            if not p_logs.empty and HAS_PLOTLY:
+                fig = px.line(p_logs.sort_values('Timestamp'), x='Timestamp', y='Rating', markers=True)
+                st.plotly_chart(fig, use_container_width=True)
 
 # --- ANALYTICS DASHBOARD ---
 elif page == "Analytics Dashboard":
@@ -137,17 +196,10 @@ elif page == "Analytics Dashboard":
     master_df, log_df = get_data("Master_List"), get_data("Performance_Log")
     if not log_df.empty and not master_df.empty:
         full_df = pd.merge(log_df, master_df[['Resource Name', 'Goal', 'Project', 'Year', 'Month']], on=['Resource Name', 'Goal'], how='left')
-        af1, af2, af3 = st.columns(3)
-        ap_filt = af1.selectbox("Project", ["All"] + sorted(master_df["Project"].unique().tolist()))
-        ay_filt = af2.selectbox("Year", ["All"] + sorted(master_df["Year"].unique().astype(str).tolist()))
-        am_filt = af3.selectbox("Month", ["All"] + months_list)
-        df = full_df.copy()
-        if ap_filt != "All": df = df[df["Project"] == ap_filt]
-        kpi_df = df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
+        kpi_df = full_df.sort_values('Timestamp').drop_duplicates(subset=['Resource Name', 'Goal'], keep='last')
         m1, m2, m3 = st.columns(3)
-        m1.metric("Evaluations", len(kpi_df)); m2.metric("Achievement Rate", f"{(len(kpi_df[kpi_df['Status']=='Achieved'])/len(kpi_df)*100):.1f}%" if len(kpi_df)>0 else "0%"); m3.metric("Avg Stars", f"{kpi_df['Rating'].mean():.1f} ⭐")
-        if HAS_PLOTLY and not kpi_df.empty:
-            st.plotly_chart(px.pie(kpi_df, names="Status", title="Status Distribution"), use_container_width=True)
+        m1.metric("Evaluations", len(kpi_df)); m2.metric("Achievement Rate", f"{(len(kpi_df[kpi_df['Status']=='Achieved'])/len(kpi_df)*100):.1f}%" if len(kpi_df)>0 else "0%"); m3.metric("Avg Rating", f"{kpi_df['Rating'].mean():.1f} ⭐")
+        if HAS_PLOTLY: st.plotly_chart(px.pie(kpi_df, names="Status", title="Team Status Distribution"), use_container_width=True)
 
 # --- AUDIT SECTION ---
 else:
